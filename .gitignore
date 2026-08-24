@@ -1,0 +1,41 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.flutter-plugins-dependencies
+
+# Flutter generated files
+*.lock
+
+# Android
+.gradle/
+.idea/
+*.iml
+local.properties
+captures/
+
+# React / Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Firebase / Local configuration
+firebase-debug.log
+.firebase/
+
+# IDE files
+.vscode/
+
+# Operating system files
+.DS_Store
+Thumbs.db

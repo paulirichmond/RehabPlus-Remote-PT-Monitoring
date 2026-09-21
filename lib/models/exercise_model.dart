@@ -16,6 +16,18 @@ enum ExerciseType {
   wallSit,
 }
 
+enum ExerciseDifficulty {
+  easy,
+  moderate,
+  hard;
+
+  String get label => switch (this) {
+        ExerciseDifficulty.easy => 'Easy',
+        ExerciseDifficulty.moderate => 'Moderate',
+        ExerciseDifficulty.hard => 'Hard',
+      };
+}
+
 class ExerciseConfig {
   final ExerciseType type;
   final String title;
@@ -32,6 +44,9 @@ class ExerciseConfig {
   /// how many completed holds) finish the exercise.
   final int targetReps;
 
+  final ExerciseDifficulty difficulty;
+  final int estimatedMinutes;
+
   const ExerciseConfig({
     required this.type,
     required this.title,
@@ -40,10 +55,30 @@ class ExerciseConfig {
     required this.targetAngle,
     required this.restAngle,
     required this.targetReps,
+    required this.difficulty,
+    required this.estimatedMinutes,
     this.holdSeconds = 0,
   });
 
   bool get isHold => holdSeconds > 0;
+
+  /// Returns a copy with just the therapist-assignable fields overridden.
+  /// Pose-detection angles (targetAngle/restAngle) are never overridden —
+  /// they're calibrated per exercise type in code, not set by a therapist.
+  ExerciseConfig copyWith({int? targetReps, int? holdSeconds}) {
+    return ExerciseConfig(
+      type: type,
+      title: title,
+      category: category,
+      repsText: repsText,
+      targetAngle: targetAngle,
+      restAngle: restAngle,
+      difficulty: difficulty,
+      estimatedMinutes: estimatedMinutes,
+      targetReps: targetReps ?? this.targetReps,
+      holdSeconds: holdSeconds ?? this.holdSeconds,
+    );
+  }
 }
 
 final List<ExerciseConfig> availableExercises = [
@@ -54,6 +89,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'MCL Recovery',
     repsText: '1 Set | 10 Reps',
     targetReps: 10,
+    difficulty: ExerciseDifficulty.moderate,
+    estimatedMinutes: 12,
     targetAngle: 125.0, // extended (lowered from 150: pose model rarely reads 180)
     restAngle: 110.0, // seated, knee relaxed
   ),
@@ -63,6 +100,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'MCL Recovery',
     repsText: '1 Set | 10 Reps',
     targetReps: 10,
+    difficulty: ExerciseDifficulty.moderate,
+    estimatedMinutes: 12,
     targetAngle: 140.0, // Hip flexion target
     restAngle: 170.0,
   ),
@@ -72,6 +111,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'MCL Recovery',
     repsText: '1 Set | 10 Reps',
     targetReps: 10,
+    difficulty: ExerciseDifficulty.easy,
+    estimatedMinutes: 10,
     targetAngle: 90.0, // Fully bent knee
     restAngle: 160.0,
   ),
@@ -81,6 +122,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'MCL Recovery',
     repsText: '1 Set | 10 Reps',
     targetReps: 10,
+    difficulty: ExerciseDifficulty.easy,
+    estimatedMinutes: 10,
     targetAngle: 90.0,
     restAngle: 160.0,
   ),
@@ -90,6 +133,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'Lower Body',
     repsText: '1 Set | 10 Reps',
     targetReps: 10,
+    difficulty: ExerciseDifficulty.moderate,
+    estimatedMinutes: 15,
     targetAngle: 165.0, // standing, knees straight
     restAngle: 110.0, // seated
   ),
@@ -99,6 +144,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'Core & Hips',
     repsText: '1 Set | 10 Reps',
     targetReps: 10,
+    difficulty: ExerciseDifficulty.easy,
+    estimatedMinutes: 10,
     targetAngle: 160.0, // hips lifted, body in a line
     restAngle: 135.0, // lying, knees bent
   ),
@@ -110,6 +157,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'Arm Rehabilitation',
     repsText: '1 Set | 10 Reps',
     targetReps: 10,
+    difficulty: ExerciseDifficulty.easy,
+    estimatedMinutes: 8,
     targetAngle: 70.0, // elbow bent
     restAngle: 140.0, // arm nearly straight
   ),
@@ -119,6 +168,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'Arm Rehabilitation',
     repsText: '1 Set | 10 Reps',
     targetReps: 10,
+    difficulty: ExerciseDifficulty.moderate,
+    estimatedMinutes: 10,
     targetAngle: 90.0, // Arm parallel to ground
     restAngle: 20.0,
   ),
@@ -128,6 +179,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'Arm Rehabilitation',
     repsText: '1 Set | 10 Reps',
     targetReps: 10,
+    difficulty: ExerciseDifficulty.moderate,
+    estimatedMinutes: 10,
     targetAngle: 90.0,
     restAngle: 20.0,
   ),
@@ -137,6 +190,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'Arm Rehabilitation',
     repsText: '1 Set | 10 Reps',
     targetReps: 10,
+    difficulty: ExerciseDifficulty.moderate,
+    estimatedMinutes: 10,
     targetAngle: 155.0, // Extended elbow
     restAngle: 80.0, // Bent elbow near chest
   ),
@@ -148,6 +203,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'Balance',
     repsText: '3 Holds | 10 sec',
     targetReps: 3,
+    difficulty: ExerciseDifficulty.hard,
+    estimatedMinutes: 8,
     targetAngle: 0.0, // not used for holds
     restAngle: 0.0, // not used for holds
     holdSeconds: 10,
@@ -158,6 +215,8 @@ final List<ExerciseConfig> availableExercises = [
     category: 'Lower Body',
     repsText: '3 Holds | 20 sec',
     targetReps: 3,
+    difficulty: ExerciseDifficulty.hard,
+    estimatedMinutes: 10,
     targetAngle: 90.0, // knee angle to hold (+/- 20 degrees)
     restAngle: 0.0, // not used for holds
     holdSeconds: 20,

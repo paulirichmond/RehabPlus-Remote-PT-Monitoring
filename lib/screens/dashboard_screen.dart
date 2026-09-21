@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:phosphor_flutter/phosphor_flutter.dart';
-import 'history_screen.dart';
 import 'messages_screen.dart';
 import 'profile_screen.dart';
 import 'notification_page.dart';
@@ -149,7 +148,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
-  // ── HEADER ──────────────────────────────────────────────────────────────────
+  // ── HEADER ─────────────────────────────────────────────────────────────────
   Widget _buildHeader() {
     return Container(
       decoration: const BoxDecoration(

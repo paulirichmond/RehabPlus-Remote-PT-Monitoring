@@ -2,7 +2,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:camera/camera.dart';
 import 'package:uuid/uuid.dart';
-import 'package:provider/provider.dart';
 import '../models/exercise.dart';
 import '../models/session.dart';
 import '../models/pose_data.dart';

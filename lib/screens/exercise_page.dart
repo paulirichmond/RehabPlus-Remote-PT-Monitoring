@@ -1,7 +1,9 @@
 // lib/screens/exercise_page.dart
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../models/exercise_model.dart';
+import '../services/app_provider.dart';
 import 'pose_detector_screen.dart';
 
 class ExercisePage extends StatefulWidget {
@@ -14,6 +16,39 @@ class ExercisePage extends StatefulWidget {
 class _ExercisePageState extends State<ExercisePage> {
   static const Color primaryTeal = Color(0xFF23A8AA);
   static const Color lightTealBg = Color(0xFFE8F7F7);
+
+  late Future<List<ExerciseConfig>> _exercisesFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _exercisesFuture = _loadAssignedExercises();
+  }
+
+  // TODO: this was wired to a therapist-assigned plan via Firestore
+  // (PlanService/AuthService) — reverted to the static list for now. See
+  // plan_service.dart/auth_service.dart if you want to reconnect it later.
+  Future<List<ExerciseConfig>> _loadAssignedExercises() async {
+    return availableExercises;
+  }
+
+  Future<void> _refresh() async {
+    setState(() => _exercisesFuture = _loadAssignedExercises());
+    await _exercisesFuture;
+  }
+
+  // How close the patient is to a default goal of 3x/week for this
+  // exercise, based on sessions actually saved in the last 7 days.
+  // NOTE: uses a fixed assumption of 3x/week rather than the plan's real
+  // frequencyPerWeek — wire that through if you want it exact per plan.
+  double _weeklyProgress(AppProvider provider, ExerciseConfig config) {
+    final weekAgo = DateTime.now().subtract(const Duration(days: 7));
+    final count = provider.sessionHistory
+        .where((s) => s.exerciseId == config.type.name && s.startTime.isAfter(weekAgo))
+        .length;
+    const assumedWeeklyGoal = 3;
+    return (count / assumedWeeklyGoal).clamp(0.0, 1.0);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -126,19 +161,56 @@ class _ExercisePageState extends State<ExercisePage> {
                 ),
                 const SizedBox(height: 16),
 
-                // Exercise list, driven by availableExercises (exercise_model.dart)
+                // Exercise list, driven by the patient's assigned plan.
                 Expanded(
-                  child: ListView.builder(
-                    physics: const BouncingScrollPhysics(),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 8,
-                    ),
-                    itemCount: availableExercises.length,
-                    itemBuilder: (context, index) {
-                      return AnimatedExerciseCard(
-                        index: index,
-                        config: availableExercises[index],
+                  child: FutureBuilder<List<ExerciseConfig>>(
+                    future: _exercisesFuture,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(
+                          child: CircularProgressIndicator(color: primaryTeal),
+                        );
+                      }
+
+                      if (snapshot.hasError) {
+                        return _buildMessage(
+                          icon: Icons.wifi_off_rounded,
+                          text: "Couldn't load your plan. Check your connection and try again.",
+                          onRetry: _refresh,
+                        );
+                      }
+
+                      final exercises = snapshot.data ?? const [];
+                      if (exercises.isEmpty) {
+                        return _buildMessage(
+                          icon: Icons.event_note_rounded,
+                          text: 'No therapy plan assigned yet.\nCheck back once your therapist sets one up.',
+                          onRetry: _refresh,
+                        );
+                      }
+
+                      return RefreshIndicator(
+                        color: primaryTeal,
+                        onRefresh: _refresh,
+                        child: Consumer<AppProvider>(
+                          builder: (context, provider, _) => ListView.builder(
+                            physics: const BouncingScrollPhysics(
+                              parent: AlwaysScrollableScrollPhysics(),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 20,
+                              vertical: 8,
+                            ),
+                            itemCount: exercises.length,
+                            itemBuilder: (context, index) {
+                              return AnimatedExerciseCard(
+                                index: index,
+                                config: exercises[index],
+                                progress: _weeklyProgress(provider, exercises[index]),
+                              );
+                            },
+                          ),
+                        ),
                       );
                     },
                   ),
@@ -147,6 +219,39 @@ class _ExercisePageState extends State<ExercisePage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildMessage({
+    required IconData icon,
+    required String text,
+    required VoidCallback onRetry,
+  }) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(color: lightTealBg, shape: BoxShape.circle),
+              child: Icon(icon, size: 36, color: primaryTeal),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              text,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 14, color: Colors.black54, height: 1.4),
+            ),
+            const SizedBox(height: 16),
+            TextButton(
+              onPressed: onRetry,
+              child: const Text('Refresh', style: TextStyle(color: primaryTeal, fontWeight: FontWeight.w600)),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -185,10 +290,14 @@ class AnimatedExerciseCard extends StatefulWidget {
   final int index;
   final ExerciseConfig config;
 
+  /// 0.0–1.0 progress toward this exercise's default weekly goal.
+  final double progress;
+
   const AnimatedExerciseCard({
     super.key,
     required this.index,
     required this.config,
+    required this.progress,
   });
 
   @override
@@ -197,13 +306,6 @@ class AnimatedExerciseCard extends StatefulWidget {
 
 class _AnimatedExerciseCardState extends State<AnimatedExerciseCard>
     with SingleTickerProviderStateMixin {
-  // Card colors repeat in order: blue, pink, mint, blue, ...
-  static const List<Color> _bgColors = [
-    Color(0xFFC6F1FE),
-    Color(0xFFF7CEFA),
-    Color(0xFFA0FCD7),
-  ];
-
   late AnimationController _controller;
   late Animation<double> _fadeAnimation;
   late Animation<Offset> _slideAnimation;
@@ -242,13 +344,52 @@ class _AnimatedExerciseCardState extends State<AnimatedExerciseCard>
     super.dispose();
   }
 
+  // Icon + accent color per exercise category. Hold exercises always get
+  // the timer icon regardless of category, since "how long" matters more
+  // than "which body part" at a glance.
+  ({Color accent, IconData icon}) get _visuals {
+    if (widget.config.isHold) {
+      return (accent: const Color(0xFFE91E63), icon: Icons.timer_rounded);
+    }
+    switch (widget.config.category) {
+      case 'MCL Recovery':
+        return (accent: const Color(0xFF00ACC1), icon: Icons.swap_vert_rounded);
+      case 'Lower Body':
+        return (accent: const Color(0xFFFF7043), icon: Icons.directions_walk_rounded);
+      case 'Core & Hips':
+        return (accent: const Color(0xFF7E57C2), icon: Icons.self_improvement_rounded);
+      case 'Arm Rehabilitation':
+        return (accent: const Color(0xFF42A5F5), icon: Icons.fitness_center_rounded);
+      default:
+        return (accent: const Color(0xFF23A8AA), icon: Icons.accessibility_new_rounded);
+    }
+  }
+
+  ({Color bg, Color fg}) get _difficultyColors {
+    switch (widget.config.difficulty) {
+      case ExerciseDifficulty.easy:
+        return (bg: const Color(0xFFE2F3D3), fg: const Color(0xFF558B2F));
+      case ExerciseDifficulty.moderate:
+        return (bg: const Color(0xFFFFF3D6), fg: const Color(0xFFF9A825));
+      case ExerciseDifficulty.hard:
+        return (bg: const Color(0xFFFFE0E0), fg: const Color(0xFFD32F2F));
+    }
+  }
+
+  void _startExercise() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PoseDetectorScreen(selectedExercise: widget.config),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final cardColor = _bgColors[widget.index % _bgColors.length];
-
-    // e.g. ExerciseType.sideRaise -> assets/images/sideRaise.png
-    // If the image file doesn't exist, the placeholder icon below is shown.
-    final imagePath = 'assets/images/${widget.config.type.name}.png';
+    final config = widget.config;
+    final visuals = _visuals;
+    final diff = _difficultyColors;
 
     return FadeTransition(
       opacity: _fadeAnimation,
@@ -258,92 +399,114 @@ class _AnimatedExerciseCardState extends State<AnimatedExerciseCard>
           onTapDown: (_) => setState(() => _scale = 0.97),
           onTapUp: (_) => setState(() => _scale = 1.0),
           onTapCancel: () => setState(() => _scale = 1.0),
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) =>
-                    PoseDetectorScreen(selectedExercise: widget.config),
-              ),
-            );
-          },
+          onTap: _startExercise,
           child: AnimatedScale(
             scale: _scale,
             duration: const Duration(milliseconds: 150),
             curve: Curves.easeOut,
             child: Container(
-              margin: const EdgeInsets.only(bottom: 18),
-              height: 135,
+              margin: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: cardColor,
-                borderRadius: BorderRadius.circular(24),
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(22),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.04),
-                    blurRadius: 10,
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 12,
                     offset: const Offset(0, 4),
                   ),
                 ],
               ),
-              child: Stack(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Card Text Info
-                  Positioned(
-                    left: 20,
-                    top: 20,
-                    bottom: 20,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          widget.config.title,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black,
-                            height: 1.15,
-                          ),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 52,
+                        height: 52,
+                        decoration: BoxDecoration(
+                          color: visuals.accent.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(14),
                         ),
-                        const SizedBox(height: 6),
-                        Text(
-                          widget.config.repsText,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.black87,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // Image Container
-                  Positioned(
-                    right: 10,
-                    bottom: 0,
-                    top: 0,
-                    child: ClipRRect(
-                      borderRadius: const BorderRadius.horizontal(
-                        right: Radius.circular(24),
+                        child: Icon(visuals.icon, color: visuals.accent, size: 26),
                       ),
-                      child: Image.asset(
-                        imagePath,
-                        fit: BoxFit.contain,
-                        alignment: Alignment.bottomRight,
-                        errorBuilder: (context, error, stackTrace) {
-                          // Placeholder icon if image file is missing
-                          return Container(
-                            width: 120,
-                            alignment: Alignment.center,
-                            child: const Icon(
-                              Icons.accessibility_new_rounded,
-                              size: 64,
-                              color: Color(0xFF23A8AA),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              config.title,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.black87,
+                              ),
                             ),
-                          );
-                        },
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                Icon(Icons.schedule_rounded, size: 13, color: Colors.grey.shade500),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '${config.estimatedMinutes} min',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                                ),
+                                const SizedBox(width: 12),
+                                Icon(Icons.repeat_rounded, size: 13, color: Colors.grey.shade500),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: Text(
+                                    config.repsText,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
+                      const SizedBox(width: 8),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: diff.bg,
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              config.difficulty.label,
+                              style: TextStyle(color: diff.fg, fontSize: 11, fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          GestureDetector(
+                            onTap: _startExercise,
+                            child: Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(color: visuals.accent, shape: BoxShape.circle),
+                              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 20),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: LinearProgressIndicator(
+                      value: widget.progress,
+                      minHeight: 6,
+                      backgroundColor: visuals.accent.withValues(alpha: 0.12),
+                      valueColor: AlwaysStoppedAnimation(visuals.accent),
                     ),
                   ),
                 ],

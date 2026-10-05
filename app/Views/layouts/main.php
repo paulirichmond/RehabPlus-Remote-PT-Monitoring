@@ -36,12 +36,14 @@
 
         .sidebar{
             width:280px;
-            min-height:100vh;
+            height:100vh;
             background:var(--admin-surface);
             border-right:1px solid var(--admin-border);
             position:fixed;
             left:0;
             top:0;
+            padding:20px 18px 14px;
+            overflow:hidden;
         }
 
         .main-content{
@@ -50,21 +52,33 @@
         }
 
         .topbar{
-            height:90px;
+            height:72px;
             background:var(--admin-surface);
             border-bottom:1px solid var(--admin-border);
+        }
+
+        .nav-section{
+            font-size:12px;
+            font-weight:800;
+            letter-spacing:0.12em;
+            text-transform:uppercase;
+            color:#64748b;
+            margin:18px 8px 10px;
         }
 
         .menu-link{
             display:flex;
             align-items:center;
-            gap:14px;
-            padding:16px 20px;
-            border-radius:18px;
+            gap:12px;
+            padding:12px 14px;
+            border-radius:14px;
             color:#334155;
             text-decoration:none;
             font-weight:600;
-            margin-bottom:8px;
+            margin-bottom:6px;
+            font-size:0.92rem;
+            line-height:1.2;
+            transition:all 0.2s ease;
         }
 
         .menu-link.active{
@@ -199,45 +213,70 @@
 <body>
 
 <!-- SIDEBAR -->
-<div class="sidebar p-4">
+<div class="sidebar">
 
-    <h1 class="fw-bold mb-5">
+    <h1 class="fw-bold mb-4">
         <span style="color:#14b8a6;">❤</span>
         RehabPlus
     </h1>
 
-    <div class="text-uppercase text-muted small fw-bold mb-3">
-        Main
-    </div>
+    <div class="nav-section">Overview</div>
 
-    <a href="<?= site_url('dashboard') ?>" class="menu-link">
+    <a href="<?= site_url('dashboard') ?>" class="menu-link <?= uri_string() === '' || uri_string() === 'dashboard' ? 'active' : '' ?>">
         <i class="bi bi-speedometer2"></i>
         Dashboard
     </a>
 
-    <a href="<?= site_url('patients') ?>" class="menu-link">
+    <a href="<?= site_url('reports-analytics') ?>" class="menu-link <?= in_array(uri_string(), ['analytics', 'reports', 'reports-analytics'], true) ? 'active' : '' ?>">
+        <i class="bi bi-graph-up-arrow"></i>
+        Reports & Analytics
+    </a>
+
+    <div class="nav-section mt-4">Management</div>
+
+    <a href="<?= site_url('patients') ?>" class="menu-link <?= str_starts_with(uri_string(),'patients') ? 'active' : '' ?>">
         <i class="bi bi-people-fill"></i>
         Patients
     </a>
 
-    <a href="<?= site_url('appointments') ?>" class="menu-link">
+    <a href="<?= site_url('appointments') ?>" class="menu-link <?= str_starts_with(uri_string(),'appointments') ? 'active' : '' ?>">
         <i class="bi bi-calendar-check"></i>
         Appointments
     </a>
 
-    <a href="<?= site_url('analytics') ?>" class="menu-link">
-        <i class="bi bi-graph-up"></i>
-        Recovery Analytics
+    <a href="<?= site_url('billing') ?>" class="menu-link <?= uri_string() === 'billing' ? 'active' : '' ?>">
+        <i class="bi bi-credit-card"></i>
+        Billing and Payment Records
     </a>
 
-    <div class="text-uppercase text-muted small fw-bold mt-5 mb-3">
-        Admin
-    </div>
-
-    <a href="<?= site_url('users') ?>" class="menu-link active">
-        <i class="bi bi-person-gear"></i>
-        Users
+    <a href="<?= site_url('inventory') ?>" class="menu-link <?= uri_string() === 'inventory' ? 'active' : '' ?>">
+        <i class="bi bi-box-seam"></i>
+        Inventory and Supplies
     </a>
+
+    <a href="<?= site_url('schedule') ?>" class="menu-link <?= uri_string() === 'schedule' ? 'active' : '' ?>">
+        <i class="bi bi-calendar-week"></i>
+        Staff Schedule
+    </a>
+
+    <a href="<?= site_url('notes') ?>" class="menu-link <?= uri_string() === 'notes' ? 'active' : '' ?>">
+        <i class="bi bi-journal-text"></i>
+        Therapy Notes & Care Plans
+    </a>
+
+    <a href="<?= site_url('assessments') ?>" class="menu-link <?= uri_string() === 'assessments' ? 'active' : '' ?>">
+        <i class="bi bi-clipboard2-pulse"></i>
+        Assessments & Goals
+    </a>
+
+    <?php if (session()->get('user_role') === 'superadmin'): ?>
+        <div class="nav-section mt-4">Admin</div>
+
+        <a href="<?= site_url('users') ?>" class="menu-link <?= str_starts_with(uri_string(),'users') ? 'active' : '' ?>">
+            <i class="bi bi-person-gear"></i>
+            Users
+        </a>
+    <?php endif ?>
 
 </div>
 

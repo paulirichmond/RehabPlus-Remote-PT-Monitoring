@@ -44,13 +44,7 @@ class UserController extends BaseController
     {
         $model = new UserModel();
 
-        $role = $this->request->getPost('role');
-
-        // DEFAULT ROLE
-
-        if (empty($role)) {
-            $role = 'staff';
-        }
+        $role = UserModel::normalizeRoleForStaffAccount($this->request->getPost('role'));
 
         $data = [
 
@@ -180,7 +174,7 @@ class UserController extends BaseController
         ];
 
         if ($user['role'] !== 'patient') {
-            $data['role'] = $this->request->getPost('role');
+            $data['role'] = UserModel::normalizeRoleForStaffAccount($this->request->getPost('role'));
         } else {
             $data['role'] = 'patient';
         }

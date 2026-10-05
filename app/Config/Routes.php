@@ -143,6 +143,75 @@ $routes->group('', ['filter' => 'auth'], function ($routes) {
         'DashboardController::index'
     );
 
+    $routes->get(
+        'reports-analytics',
+        'DashboardController::reportsAnalytics'
+    );
+
+    $routes->get(
+        'reports',
+        'DashboardController::reports'
+    );
+
+    $routes->get(
+        'reports/export',
+        'DashboardController::export'
+    );
+
+    $routes->get(
+        'billing',
+        'DashboardController::billing'
+    );
+
+    $routes->post(
+        'billing/save',
+        'DashboardController::saveBilling'
+    );
+
+    $routes->get(
+        'inventory',
+        'DashboardController::inventory'
+    );
+
+    $routes->post(
+        'inventory/save',
+        'DashboardController::saveInventory'
+    );
+
+    $routes->get(
+        'schedule',
+        'DashboardController::schedule'
+    );
+
+    $routes->post(
+        'schedule/save',
+        'DashboardController::saveSchedule'
+    );
+
+    $routes->post(
+        'schedule/time-off/save',
+        'DashboardController::saveTimeOff'
+    );
+
+    $routes->get(
+        'notes',
+        'DashboardController::notes'
+    );
+
+    $routes->post(
+        'notes/save',
+        'DashboardController::saveNotes'
+    );
+
+    $routes->get(
+        'assessments',
+        'DashboardController::assessments'
+    );
+
+    $routes->post(
+        'assessments/save',
+        'DashboardController::saveAssessments'
+    );
 
     // ==================================================
     // USER MANAGEMENT

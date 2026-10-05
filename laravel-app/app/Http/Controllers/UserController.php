@@ -89,7 +89,9 @@ class UserController extends Controller
 
         $data = $request->validate($rules);
 
-        if ($user->role !== 'patient') {
+        if ($user->role === 'therapist') {
+            $data['role'] = 'therapist';
+        } elseif ($user->role !== 'patient') {
             $data['role'] = $request->input('role', $user->role);
         } else {
             $data['role'] = 'patient';

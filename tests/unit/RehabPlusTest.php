@@ -57,7 +57,16 @@ class RehabPlusTest extends CIUnitTestCase
         $this->assertArrayHasKey('name', $model->errors());
     }
 
-    // Test 5: Compliance rate calculation
+    // Test 5: Staff account roles exclude patient
+    public function testStaffRoleValidationRejectsPatientRole(): void
+    {
+        $this->assertSame('staff', UserModel::normalizeRoleForStaffAccount('patient'));
+        $this->assertSame('therapist', UserModel::normalizeRoleForStaffAccount('therapist'));
+        $this->assertSame('manager', UserModel::normalizeRoleForStaffAccount('manager'));
+        $this->assertSame('superadmin', UserModel::normalizeRoleForStaffAccount('superadmin'));
+    }
+
+    // Test 6: Compliance rate calculation
     public function testComplianceRateCalculation(): void
     {
         $prescribed = 10;

@@ -42,7 +42,6 @@ $pageTitle = ($isEdit ? 'Edit User' : 'Add User') . ' – RehabPlus'; ?>
                     <select name="role" class="form-select" required>
                         <option value="staff"      <?= ($user['role'] ?? '') === 'staff'      ? 'selected' : '' ?>>Staff</option>
                         <option value="therapist"  <?= ($user['role'] ?? '') === 'therapist'  ? 'selected' : '' ?>>Therapist</option>
-                        <option value="patient"    <?= ($user['role'] ?? '') === 'patient'    ? 'selected' : '' ?>>Patient</option>
                         <option value="manager"    <?= ($user['role'] ?? '') === 'manager'    ? 'selected' : '' ?>>Manager</option>
                         <option value="superadmin" <?= ($user['role'] ?? '') === 'superadmin' ? 'selected' : '' ?>>Super Admin</option>
                     </select>

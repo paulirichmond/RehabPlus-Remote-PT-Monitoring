@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>@yield('title', 'RehabPlus')</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <style>
         :root {
             --primary:#14b8a6;
@@ -291,8 +292,11 @@
             </div>
 
             @if(auth()->user() && auth()->user()->role === 'superadmin')
-                <div class="nav-section" style="margin-top: 1.5rem;">Admin</div>
+                <div class="nav-section" style="margin-top: 1.5rem;">Management</div>
                 <div class="nav flex-column" style="display:flex; flex-direction:column;">
+                    <a class="nav-link {{ request()->routeIs('patient-statistics') ? 'active' : '' }}" href="{{ route('patient-statistics') }}">
+                        <i class="bi bi-activity"></i> Patient Statistics
+                    </a>
                     <a class="nav-link {{ request()->routeIs('users.*') || request()->is('users*') ? 'active' : '' }}" href="{{ route('users.index') }}">
                         <i class="bi bi-person-gear"></i> Users
                     </a>

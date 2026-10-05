@@ -54,6 +54,10 @@ Route::middleware(['auth.rehab'])->group(function () {
     Route::get('/analytics', [DashboardController::class, 'analytics'])->name('analytics');
 
     Route::middleware(['role:superadmin'])->group(function () {
+        Route::get('/patient-statistics', [DashboardController::class, 'patientStatistics'])->name('patient-statistics');
+        Route::get('/patient-statistics/export/csv', [DashboardController::class, 'exportPatientStatisticsCsv'])->name('patient-statistics.export.csv');
+        Route::get('/patient-statistics/export/pdf', [DashboardController::class, 'exportPatientStatisticsPdf'])->name('patient-statistics.export.pdf');
+
         Route::get('/users', [UserController::class, 'index'])->name('users.index');
         Route::get('/users/create', [UserController::class, 'create'])->name('users.create');
         Route::post('/users', [UserController::class, 'store'])->name('users.store');

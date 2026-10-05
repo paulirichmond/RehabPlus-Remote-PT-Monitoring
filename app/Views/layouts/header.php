@@ -63,6 +63,7 @@
 
             color:var(--text);
 
+            overflow-x:hidden;
             min-height:100vh;
         }
 
@@ -98,7 +99,7 @@
         }
 
         html.dark-mode body .sidebar .nav-link{
-            color:#cbd5e1;
+            color:#e2e8f0;
         }
 
         html.dark-mode body .sidebar .nav-link:hover{
@@ -106,11 +107,85 @@
             color:#5eead4;
         }
 
+        html.dark-mode body .nav-section{
+            color:#94a3b8 !important;
+            opacity:1;
+        }
+
+        html.dark-mode body .sidebar .nav-link.active{
+            background:#134e4a;
+            color:#a7f3d0;
+        }
+
+        html.dark-mode body .page-title,
+        html.dark-mode body h1,
+        html.dark-mode body h2,
+        html.dark-mode body h3,
+        html.dark-mode body h4,
+        html.dark-mode body h5,
+        html.dark-mode body h6,
+        html.dark-mode body .fw-bold,
+        html.dark-mode body .fw-semibold,
+        html.dark-mode body .text-dark{
+            color:var(--text) !important;
+        }
+
         html.dark-mode body .table,
         html.dark-mode body .table td,
-        html.dark-mode body .table th{
-            color:#cbd5e1;
-            border-color:var(--border);
+        html.dark-mode body .table th,
+        html.dark-mode body .table thead th,
+        html.dark-mode body .table thead,
+        html.dark-mode body .table tbody,
+        html.dark-mode body .table-responsive{
+            color:#cbd5e1 !important;
+            border-color:var(--border) !important;
+            background-color:transparent !important;
+        }
+
+        html.dark-mode body #staff-roles,
+        html.dark-mode body #patient-accounts,
+        html.dark-mode body #staff-roles .table,
+        html.dark-mode body #patient-accounts .table,
+        html.dark-mode body #staff-roles .input-group-text,
+        html.dark-mode body #patient-accounts .input-group-text,
+        html.dark-mode body #staff-roles .form-control,
+        html.dark-mode body #patient-accounts .form-control,
+        html.dark-mode body #staff-roles .form-select,
+        html.dark-mode body #patient-accounts .form-select,
+        html.dark-mode body .card,
+        html.dark-mode body .card-header{
+            background-color:var(--card) !important;
+            color:var(--text) !important;
+            border-color:var(--border) !important;
+        }
+
+        html.dark-mode body .table thead th{
+            background:#172235 !important;
+            color:#cbd5e1 !important;
+        }
+
+        html.dark-mode body .input-group-text,
+        html.dark-mode body .form-control,
+        html.dark-mode body .form-select,
+        html.dark-mode body textarea{
+            background:#0f172a !important;
+            color:#ffffff !important;
+            border-color:var(--border) !important;
+        }
+
+        html.dark-mode body .text-muted,
+        html.dark-mode body .text-secondary,
+        html.dark-mode body .small,
+        html.dark-mode body small{
+            color:var(--muted) !important;
+        }
+
+        html.dark-mode body .badge,
+        html.dark-mode body .btn-outline-secondary,
+        html.dark-mode body .btn-outline-primary,
+        html.dark-mode body .btn-outline-success,
+        html.dark-mode body .btn-outline-danger{
+            background-color:transparent !important;
         }
 
         html.dark-mode body .card-body,
@@ -205,16 +280,22 @@
 
         .navbar-brand{
 
-            font-size:1.8rem;
-
+            font-size:1.3rem;
             font-weight:800;
-
+            line-height:1.2;
+            letter-spacing:-.02em;
             color:var(--text) !important;
+            white-space:nowrap;
+            display:inline-flex;
+            align-items:center;
+            gap:.45rem;
+            margin-right:auto;
         }
 
         .navbar-brand i{
 
             color:var(--primary);
+            font-size:1.2rem;
         }
 
         .top-date{
@@ -268,52 +349,52 @@
 
         .sidebar{
 
-            width:var(--sidebar-w);
-
-            min-height:calc(100vh - 74px);
-
+            width:290px;
+            height:100vh;
             background:white;
-
             border-right:1px solid var(--border);
-
-            padding:1.5rem 1rem;
-
-            position:sticky;
-            top:74px;
+            padding:20px 18px 14px;
+            position:fixed;
+            left:0;
+            top:0;
+            overflow:hidden;
         }
 
         .nav-section{
 
-            color:#94a3b8;
+            color:#64748b;
 
-            font-size:.78rem;
-
-            font-weight:700;
-
-            letter-spacing:.12em;
-
+            font-size:12px;
+            font-weight:800;
+            letter-spacing:.08em;
             text-transform:uppercase;
-
-            padding:.6rem .9rem;
+            margin:18px 8px 12px;
+            padding:4px 0;
+            display:block;
+            line-height:1.3;
+            white-space:nowrap;
+            width:100%;
         }
 
         .sidebar .nav-link{
 
             color:#334155;
 
-            border-radius:18px;
+            border-radius:14px;
 
-            padding:.95rem 1rem;
+            padding:12px 14px;
 
             display:flex;
             align-items:center;
-            gap:.9rem;
+            gap:12px;
 
-            margin-bottom:.35rem;
+            margin-bottom:6px;
 
             transition:.2s ease;
 
             font-weight:600;
+            font-size:0.92rem;
+            line-height:1.2;
         }
 
         .sidebar .nav-link i{
@@ -332,17 +413,8 @@
 
         .sidebar .nav-link.active{
 
-            background:
-                linear-gradient(
-                    135deg,
-                    #14b8a6,
-                    #2dd4bf
-                );
-
-            color:white;
-
-            box-shadow:
-                0 10px 24px rgba(20,184,166,.20);
+            background:#dff7f2;
+            color:#0f766e;
         }
 
         /* MAIN */
@@ -351,7 +423,10 @@
 
             flex:1;
 
+            margin-left:280px;
+            min-height:100vh;
             padding:2rem;
+            overflow-y:auto;
         }
 
         /* PAGE TITLE */
@@ -641,7 +716,7 @@
 
         <div class="nav-section">
 
-            Main
+            Overview
 
         </div>
 
@@ -659,6 +734,29 @@
                 </a>
 
             </li>
+
+            <li class="nav-item">
+
+                <a class="nav-link <?= in_array(uri_string(), ['analytics', 'reports', 'reports-analytics'], true) ? 'active' : '' ?>"
+                   href="<?= site_url('reports-analytics') ?>">
+
+                    <i class="bi bi-graph-up-arrow"></i>
+
+                    Reports & Analytics
+
+                </a>
+
+            </li>
+
+        </ul>
+
+        <div class="nav-section mt-4">
+
+            Management
+
+        </div>
+
+        <ul class="nav flex-column">
 
             <li class="nav-item">
 
@@ -688,12 +786,64 @@
 
             <li class="nav-item">
 
-                <a class="nav-link"
-                   href="<?= site_url('analytics') ?>">
+                <a class="nav-link <?= uri_string() === 'billing' ? 'active' : '' ?>"
+                   href="<?= site_url('billing') ?>">
 
-                    <i class="bi bi-graph-up-arrow"></i>
+                    <i class="bi bi-credit-card"></i>
 
-                    Recovery Analytics
+                    Billing and Payment Records
+
+                </a>
+
+            </li>
+
+            <li class="nav-item">
+
+                <a class="nav-link <?= uri_string() === 'inventory' ? 'active' : '' ?>"
+                   href="<?= site_url('inventory') ?>">
+
+                    <i class="bi bi-box-seam"></i>
+
+                    Inventory and Supplies
+
+                </a>
+
+            </li>
+
+            <li class="nav-item">
+
+                <a class="nav-link <?= uri_string() === 'schedule' ? 'active' : '' ?>"
+                   href="<?= site_url('schedule') ?>">
+
+                    <i class="bi bi-calendar-week"></i>
+
+                    Staff Schedule
+
+                </a>
+
+            </li>
+
+            <li class="nav-item">
+
+                <a class="nav-link <?= uri_string() === 'notes' ? 'active' : '' ?>"
+                   href="<?= site_url('notes') ?>">
+
+                    <i class="bi bi-journal-text"></i>
+
+                    Therapy Notes & Care Plans
+
+                </a>
+
+            </li>
+
+            <li class="nav-item">
+
+                <a class="nav-link <?= uri_string() === 'assessments' ? 'active' : '' ?>"
+                   href="<?= site_url('assessments') ?>">
+
+                    <i class="bi bi-clipboard2-pulse"></i>
+
+                    Assessments & Goals
 
                 </a>
 
@@ -723,6 +873,7 @@
                 </a>
 
             </li>
+
 
         </ul>
 

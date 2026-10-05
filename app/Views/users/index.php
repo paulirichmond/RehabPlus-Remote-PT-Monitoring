@@ -1,5 +1,5 @@
-<?= $this->extend('layouts/main') ?>
-<?= $this->section('content') ?>
+<?php $pageTitle = 'Users – RehabPlus'; ?>
+<?= view('layouts/header') ?>
 
 <div class="container-fluid py-4 px-4">
 
@@ -7,7 +7,7 @@
     <div class="d-flex justify-content-between align-items-start mb-4">
 
         <div>
-            <h1 class="fw-bold mb-1" style="font-size:32px; color:#0f172a;">
+            <h1 class="fw-bold mb-1 page-title" style="font-size:32px;">
                 Roles & Patient Accounts
             </h1>
 
@@ -485,4 +485,4 @@
 
 </div>
 
-<?= $this->endSection() ?>
+<?= view('layouts/footer') ?>

@@ -148,6 +148,17 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
 
     _lensDirection = camera.lensDirection;
 
+    // NOTE ON MIRRORING: the `camera` package has no
+    // `ignoreFrontCameraOrientation` flag (that belongs to the old
+    // `camera_features` fork, which is why the line showed up red). The
+    // standard `camera` package mirrors NOTHING: on Android/CameraX both
+    // the preview texture and the frames delivered to `startImageStream`
+    // are unmirrored. So we flip the selfie preview horizontally in
+    // _AspectCoverPreview (one flip) and mirror the ML Kit landmarks by
+    // the same single amount in PosePainter (mirrorFrontCamera). Both
+    // layers flip together -> skeleton overlays the video and behaves
+    // like a mirror: raise your right hand -> skeleton's hand rises on
+    // the right side of the screen.
     _cameraController = CameraController(
       camera,
       // Low resolution: ML Kit downscales internally anyway, so feeding it
@@ -155,6 +166,9 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       ResolutionPreset.low,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.nv21,
+      // The `camera` package does NOT mirror the front-camera preview (and
+      // never feeds mirrored frames to ML Kit). We therefore render the
+      // selfie view ourselves as a true mirror via _AspectCoverPreview.
     );
 
     await _cameraController!.initialize();
@@ -923,6 +937,16 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
           // Undistorted preview: the sensor frame keeps its native aspect
           // ratio and is centre-cropped to fill the screen (BoxFit.cover),
           // instead of being stretched 4:3 -> 16:9 like before.
+          //
+          // The `camera` package does NOT mirror the front preview (the
+          // CameraX-native-mirroring assumption was wrong), so
+          // _AspectCoverPreview now flips it horizontally to give the
+          // familiar selfie/mirror view. ML Kit analyses the unmirrored
+          // frames, so PosePainter mirrors the landmarks by the same
+          // amount (mirrorFrontCamera below). Both flip together, so the
+          // skeleton overlays the video exactly: raise your right hand ->
+          // the skeleton's hand rises on the RIGHT side of the screen and
+          // stays glued to your real hand.
           _AspectCoverPreview(controller: _cameraController!),
 
           if (_imageSize != null && _detectedPoses.isNotEmpty)
@@ -933,8 +957,9 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
                 _rotation,
                 isCorrect,
                 _lensDirection,
-                // Painter mirrors landmarks; the video layer below renders
-                // unmirrored so both agree exactly.
+                // Mirror the landmarks horizontally for the front camera so
+                // the skeleton matches the mirrored (selfie-style) view the
+                // patient expects, while staying aligned with the video.
                 mirrorFrontCamera:
                     _lensDirection == CameraLensDirection.front,
                 flaggedLandmarks: form.flagged,
@@ -1048,6 +1073,86 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
         ],
       ),
     );
+  }
+}
+
+/// Camera preview that keeps the sensor's native aspect ratio and is
+/// centre-cropped to fill the screen (BoxFit.cover), so the image is never
+/// stretched. ML Kit returns landmarks in the same rotated, full-frame
+/// coordinate space, which PosePainter maps with an identical cover + crop
+/// transform — video and skeleton therefore line up exactly.
+///
+/// IMPORTANT: the `camera` package does NOT mirror the front-camera preview
+/// on Android/CameraX — CameraPreview renders the raw, unmirrored sensor
+/// texture (there is no controller flag to change this), while the frames
+/// delivered to `startImageStream` are also unmirrored. So for a selfie-style
+/// mirror view we flip the preview horizontally ourselves (see below), and
+/// PosePainter mirrors the landmarks by the same single amount. If only ONE
+/// of the two flips, the skeleton appears inverted relative to the video.
+class _AspectCoverPreview extends StatelessWidget {
+  final CameraController controller;
+
+  const _AspectCoverPreview({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final size = controller.value.previewSize;
+    if (size == null || size.width <= 0 || size.height <= 0) {
+      return const SizedBox.shrink();
+    }
+
+    // previewSize is in sensor orientation (landscape). On a portrait device
+    // the displayed frame is rotated 90°, so swap width and height.
+    final isLandscape = MediaQuery.of(context).orientation ==
+        Orientation.landscape;
+    final frame = isLandscape ? size : Size(size.height, size.width);
+
+    final preview = LayoutBuilder(
+      builder: (context, constraints) {
+        final screen = Size(
+          constraints.maxWidth,
+          constraints.maxHeight,
+        );
+
+        // Uniform "cover" scale: big enough for both dimensions.
+        final scale = max(
+          screen.width / frame.width,
+          screen.height / frame.height,
+        );
+        final w = frame.width * scale;
+        final h = frame.height * scale;
+
+        return ClipRect(
+          child: SizedBox.expand(
+            child: FittedBox(
+              fit: BoxFit.none,
+              alignment: Alignment.center,
+              child: SizedBox(
+                width: w,
+                height: h,
+                child: CameraPreview(controller),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    // The `camera` package does NOT mirror the front-camera preview — it
+    // shows the raw (unmirrored) sensor texture. For a selfie-style mirror
+    // view we flip it horizontally here. PosePainter mirrors the landmarks
+    // by the same amount, so skeleton and video always stay in sync.
+    // Back cameras are rendered as-is.
+    final isFront =
+        controller.description.lensDirection == CameraLensDirection.front;
+
+    return isFront
+        ? Transform(
+            alignment: Alignment.center,
+            transform: Matrix4.diagonal3Values(-1.0, 1.0, 1.0),
+            child: preview,
+          )
+        : preview;
   }
 }
 

@@ -20,8 +20,12 @@ class PosePainter extends CustomPainter {
   final CameraLensDirection cameraLensDirection;
 
   /// When true the painter mirrors landmarks horizontally for the front
-  /// camera. The screen layer must then render the video UNMIRRORED
-  /// (ignoreFrontCameraOrientation = false) so picture and skeleton agree.
+  /// camera. This is required because ML Kit analyses the UNMIRRORED
+  /// image-stream frames while _AspectCoverPreview flips the selfie video
+  /// horizontally to give the familiar mirror view. Flipping the landmark
+  /// X coordinate by the same amount keeps the skeleton glued to the video:
+  /// raise your right hand and the skeleton's hand rises on the right side
+  /// of the screen — mirror behaviour, not inverted.
   final bool mirrorFrontCamera;
 
   /// Joints the form checker wants highlighted (drawn larger with a red glow).

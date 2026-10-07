@@ -127,8 +127,10 @@ class PosePainter extends CustomPainter {
           var x = offX + landmark.x * scale;
           final y = offY + landmark.y * scale;
 
-          // Flip X axis for front camera mirroring (same axis the video is
-          // mirrored on, so skeleton and picture always agree).
+          // Optional X-axis mirror (only if mirrorFrontCamera is true).
+          // Currently disabled from the screen because on this device the
+          // video preview itself is unmirrored — mirroring here would make
+          // the skeleton move opposite to the body.
           if (mirror) x = size.width - x;
           points[type] = Offset(x, y);
         }

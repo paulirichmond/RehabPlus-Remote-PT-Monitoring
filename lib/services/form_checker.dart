@@ -23,13 +23,13 @@ import '../models/exercise_model.dart';
 enum FormIssueCode {
   armsMoving,
   legsMoving,
+  elbowDrift,
+  armBent,
   bodySway,
   trunkLean,
   tooFast,
   kneeBent,
   otherLeg,
-  armCircling,
-  elbowDrifting,
   shortRange,
   notInFrame,
 }
@@ -105,6 +105,12 @@ class FormThresholds {
   /// Max trunk lean from vertical, in degrees, for upright exercises.
   final double maxTrunkLeanDeg;
 
+  /// Bicep curl: max angle between upper arm and trunk (elbow must stay pinned).
+  final double maxUpperArmSwingDeg;
+
+  /// Raises: the arm must stay at least this straight (elbow angle, degrees).
+  final double minStraightArmDeg;
+
   /// How much recent history is used for the wander measurement.
   final Duration window;
 
@@ -124,6 +130,8 @@ class FormThresholds {
     required this.torsoSwayRange,
     required this.maxWorkingSpeed,
     required this.maxTrunkLeanDeg,
+    required this.maxUpperArmSwingDeg,
+    required this.minStraightArmDeg,
     required this.window,
     required this.confirm,
     required this.hold,
@@ -136,7 +144,9 @@ class FormThresholds {
     torsoSwayRange: 0.15,
     maxWorkingSpeed: 2.2,
     maxTrunkLeanDeg: 20,
-    window: Duration(milliseconds: 600),
+    maxUpperArmSwingDeg: 30,
+    minStraightArmDeg: 150,
+    window: Duration(milliseconds: 800),
     confirm: Duration(milliseconds: 120),
     hold: Duration(milliseconds: 700),
     attemptProgress: 0.3,
@@ -148,7 +158,9 @@ class FormThresholds {
     torsoSwayRange: 0.25,
     maxWorkingSpeed: 3.5,
     maxTrunkLeanDeg: 30,
-    window: Duration(milliseconds: 600),
+    maxUpperArmSwingDeg: 45,
+    minStraightArmDeg: 140,
+    window: Duration(milliseconds: 800),
     confirm: Duration(milliseconds: 200),
     hold: Duration(milliseconds: 700),
     attemptProgress: 0.4,
@@ -205,12 +217,6 @@ class _Profile {
   final bool needsLegs;
   final bool needsArms;
 
-  /// When true (arm exercises), one complete left OR right arm chain is
-  /// enough to start tracking. A side-on phone routinely loses the far arm,
-  /// and demanding both sides paired kept the app stuck on "notInFrame" —
-  /// which froze the form state (stuck green) instead of updating it.
-  final bool armsPairwise;
-
   _Profile({
     required this.stationary,
     required this.working,
@@ -218,7 +224,6 @@ class _Profile {
     required this.upright,
     this.needsLegs = false,
     this.needsArms = false,
-    this.armsPairwise = false,
   });
 }
 
@@ -259,14 +264,11 @@ _Profile _profileFor(ExerciseType type) {
 
     case ExerciseType.bicepCurl:
       return _Profile(
-        // Elbows must stay pinned at the sides — that's what separates a
-        // real curl from arm circles. The wrist is the travelling joint.
-        stationary: {..._elbows, ..._legs},
+        stationary: {..._elbows, ..._legs}, // elbows pinned to the sides
         working: _wrists,
         torsoStill: true,
         upright: true,
         needsArms: true,
-        armsPairwise: true,
       );
 
     case ExerciseType.forwardRaise:
@@ -278,7 +280,6 @@ _Profile _profileFor(ExerciseType type) {
         torsoStill: true,
         upright: true,
         needsArms: true,
-        armsPairwise: true,
       );
 
     case ExerciseType.singleLegBalance:
@@ -402,23 +403,10 @@ class FormChecker {
             pair(PoseLandmarkType.leftAnkle, PoseLandmarkType.rightAnkle))) {
       return false;
     }
-    if (_profile.needsArms) {
-      if (_profile.armsPairwise) {
-        // Arm exercises: one complete same-side chain (elbow + wrist) is
-        // enough. The old paired check demanded BOTH elbows AND both
-        // wrists, which failed constantly with a front camera and left the
-        // app stuck reporting "notInFrame" instead of judging the form.
-        final leftArm =
-            _ok(lm[PoseLandmarkType.leftElbow]) &&
-            _ok(lm[PoseLandmarkType.leftWrist]);
-        final rightArm =
-            _ok(lm[PoseLandmarkType.rightElbow]) &&
-            _ok(lm[PoseLandmarkType.rightWrist]);
-        if (!leftArm && !rightArm) return false;
-      } else if (!(pair(PoseLandmarkType.leftElbow, PoseLandmarkType.rightElbow) &&
-          pair(PoseLandmarkType.leftWrist, PoseLandmarkType.rightWrist))) {
-        return false;
-      }
+    if (_profile.needsArms &&
+        !(pair(PoseLandmarkType.leftElbow, PoseLandmarkType.rightElbow) &&
+            pair(PoseLandmarkType.leftWrist, PoseLandmarkType.rightWrist))) {
+      return false;
     }
     return true;
   }
@@ -486,11 +474,11 @@ class FormChecker {
       maxY = maxY == null ? p.dy : max(maxY, p.dy);
       n++;
     }
-    if (n < 4) return null; // not enough evidence yet
+    if (n < 3) return null; // not enough evidence yet (3 keeps it working at low fps)
     return Offset(maxX! - minX!, maxY! - minY!).distance / torso;
   }
 
-  /// Speed of [type] over roughly the last 150-400 ms, in torso lengths / s.
+  /// Speed of [type] over roughly the last 120-500 ms, in torso lengths / s.
   double? _speed(PoseLandmarkType type, double torso) {
     if (_history.isEmpty) return null;
     final newest = _history.last.points[type];
@@ -498,7 +486,7 @@ class FormChecker {
     for (final s in _history) {
       final dt = _now - s.t;
       final p = s.points[type];
-      if (dt >= 150 && dt <= 400 && p != null) {
+      if (dt >= 120 && dt <= 500 && p != null) {
         return (newest - p).distance / torso / (dt / 1000.0);
       }
     }
@@ -619,66 +607,6 @@ class FormChecker {
     Map<PoseLandmarkType, PoseLandmark> lm,
   ) {
     switch (exercise.type) {
-      case ExerciseType.bicepCurl:
-        // Catch the "arm circles instead of curls" cheat directly. A curl
-        // takes the wrist UP toward the shoulder in a vertical arc with the
-        // elbow pinned at the side; circling sweeps the wrist through a wide
-        // horizontal loop that drags the elbow away from the torso.
-        final sh = _meanOf(_shoulders);
-        if (sh != null) {
-          for (final side in const [
-            (PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist),
-            (PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist),
-          ]) {
-            final elbow = _smooth[side.$1];
-            final wrist = _smooth[side.$2];
-            if (elbow == null || wrist == null) continue;
-
-            final elbowRange = _range(side.$1, _torsoLen ?? 1.0);
-            final wristRange = _range(side.$2, _torsoLen ?? 1.0);
-            final torso = _torsoLen;
-            if (elbowRange == null || wristRange == null || torso == null) {
-              continue;
-            }
-
-            // Elbow wandered far from its spot while the arm was "active".
-            if (elbowRange > th.stationaryRange * 0.8 &&
-                wristRange > th.stationaryRange) {
-              out.add(FormIssue(
-                code: FormIssueCode.armCircling,
-                message: 'That is an arm circle, not a curl. Keep your elbow '
-                    'at your side and fold your forearm up.',
-                landmarks: {side.$1, side.$2},
-                anchor: side.$1,
-              ));
-            } else if (elbowRange > th.stationaryRange) {
-              out.add(FormIssue(
-                code: FormIssueCode.elbowDrifting,
-                message: 'Elbow is drifting. Pin it to your side.',
-                landmarks: {side.$1},
-                anchor: side.$1,
-              ));
-            }
-
-            // Wrist must rise ABOVE the elbow during the rep (curling up),
-            // never orbit around it horizontally.
-            final wristAboveElbow = wrist.dy < elbow.dy - 0.05 * torso;
-            final nearShoulderHeight = (wrist - sh).distance < 0.45 * torso;
-            if (wristRange > th.stationaryRange &&
-                !wristAboveElbow &&
-                !nearShoulderHeight) {
-              out.add(FormIssue(
-                code: FormIssueCode.armCircling,
-                message: 'Curl straight up toward your shoulder, '
-                    'do not swing in circles.',
-                landmarks: {side.$2},
-                anchor: side.$2,
-              ));
-            }
-          }
-        }
-        break;
-
       case ExerciseType.kneeExtension:
         final l = _angle(lm, PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee,
             PoseLandmarkType.leftAnkle);
@@ -729,6 +657,58 @@ class FormChecker {
             ));
           }
           break; // first side with a full chain is enough
+        }
+        break;
+
+      case ExerciseType.bicepCurl:
+        {
+          // A curl only bends the elbow. If the upper arm swings away from the
+          // trunk, the patient is doing something else (circling, shrugging,
+          // swinging) even if the wrist speed looks harmless.
+          final swung = <PoseLandmarkType>{};
+          void side(PoseLandmarkType hp, PoseLandmarkType sh, PoseLandmarkType el) {
+            final a = _angle(lm, hp, sh, el);
+            if (a != null && a > th.maxUpperArmSwingDeg) swung.add(el);
+          }
+
+          side(PoseLandmarkType.leftHip, PoseLandmarkType.leftShoulder,
+              PoseLandmarkType.leftElbow);
+          side(PoseLandmarkType.rightHip, PoseLandmarkType.rightShoulder,
+              PoseLandmarkType.rightElbow);
+          if (swung.isNotEmpty) {
+            out.add(FormIssue(
+              code: FormIssueCode.elbowDrift,
+              message: 'Keep your elbows pinned to your sides. Only bend the elbow.',
+              landmarks: swung,
+              anchor: swung.first,
+            ));
+          }
+        }
+        break;
+
+      case ExerciseType.forwardRaise:
+      case ExerciseType.sideRaise:
+        {
+          // Assumes straight-arm raises. Delete this case if your clinic's
+          // protocol allows a bent elbow.
+          final bent = <PoseLandmarkType>{};
+          void side(PoseLandmarkType sh, PoseLandmarkType el, PoseLandmarkType wr) {
+            final a = _angle(lm, sh, el, wr);
+            if (a != null && a < th.minStraightArmDeg) bent.add(el);
+          }
+
+          side(PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow,
+              PoseLandmarkType.leftWrist);
+          side(PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow,
+              PoseLandmarkType.rightWrist);
+          if (bent.isNotEmpty) {
+            out.add(FormIssue(
+              code: FormIssueCode.armBent,
+              message: 'Keep your arm straight.',
+              landmarks: bent,
+              anchor: bent.first,
+            ));
+          }
         }
         break;
 

@@ -1,5 +1,6 @@
 // lib/screens/pose_detector_screen.dart
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -30,6 +31,11 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
   List<CameraDescription> _availableCameras = [];
   late PoseDetector _poseDetector;
   bool _isProcessing = false;
+
+  // Don't feed ML Kit more than ~15 frames/s; extra frames only add copying
+  // and garbage-collection work.
+  static const int _minFrameGapMs = 66;
+  int _lastFrameMs = 0;
 
   final AudioPlayer _audioPlayer = AudioPlayer();
 
@@ -122,19 +128,13 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
     _initCamera();
   }
 
-  /// Pose analysis is capped to roughly this rate (ms between processed
-  /// frames). ~15 fps is plenty for slow rehab movements and takes the heavy
-  /// accurate-mode inference off the critical path.
-  static const int _minFrameIntervalMs = 66;
-
   void _initPoseDetector() {
-    // "accurate" runs the heavy BlazePose full model on every frame and was
-    // the single biggest source of lag. The lightweight "benchmark" model
-    // gives the same 33 landmarks at a fraction of the cost, which is all
-    // the joint-angle math in this app needs.
     final options = PoseDetectorOptions(
       mode: PoseDetectionMode.stream,
-      model: PoseDetectionModel.benchmark,
+      // `base` is much lighter than `accurate` and is what keeps the frame
+      // rate usable on mid-range phones. Switch back if you need the extra
+      // precision and your target devices can take it.
+      model: PoseDetectionModel.base,
     );
     _poseDetector = PoseDetector(options: options);
   }
@@ -161,9 +161,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
     // the right side of the screen.
     _cameraController = CameraController(
       camera,
-      // Low resolution: ML Kit downscales internally anyway, so feeding it
-      // fewer pixels means faster inference and less memory churn per frame.
-      ResolutionPreset.low,
+      ResolutionPreset.medium,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.nv21,
       // The `camera` package does NOT mirror the front-camera preview (and
@@ -196,22 +194,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
     await _initCamera();
   }
 
-  /// Timestamp of the last processed frame — used to cap the analysis rate.
-  int _lastFrameMs = 0;
-
   void _processFrame(CameraImage image, CameraDescription camera) async {
-    // Back-pressure: skip frames while ML Kit is still busy with an earlier
-    // one instead of queueing them up (the old behaviour behind the lag).
-    if (_isProcessing || _isSessionComplete) return;
-
-    // Throttle pose analysis to ~15 fps. The model runs on a background
-    // thread but each accurate-mode inference still costs CPU/battery; human
-    // rehab movements are slow enough that 15 Hz loses nothing, and it frees
-    // the device for smooth rendering.
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    if (nowMs - _lastFrameMs < _minFrameIntervalMs) return;
+    if (_isProcessing ||
+        _isSessionComplete ||
+        nowMs - _lastFrameMs < _minFrameGapMs) {
+      return;
+    }
     _lastFrameMs = nowMs;
-
     _isProcessing = true;
 
     final inputImage = _inputImageFromCameraImage(image, camera);
@@ -219,20 +209,17 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       try {
         final List<Pose> poses = await _poseDetector.processImage(inputImage);
 
-        if (mounted && !_isSessionComplete) {
+        if (mounted) {
           // Judge the form first so the overlay and the rep logic agree.
           final form = poses.isEmpty
               ? _checker.evaluateNoPose()
               : _checker.evaluate(poses.first.landmarks);
 
-          setState(() {
-            _detectedPoses = poses;
-            _imageSize = Size(image.height.toDouble(), image.width.toDouble());
-            _rotation =
-                inputImage.metadata?.rotation ??
-                InputImageRotation.rotation0deg;
-            _form = form;
-          });
+          _detectedPoses = poses;
+          _imageSize = Size(image.height.toDouble(), image.width.toDouble());
+          _rotation =
+              inputImage.metadata?.rotation ?? InputImageRotation.rotation0deg;
+          _form = form;
 
           if (form.isWrong && !_wasWrong) _triggerWrongFeedback();
           _wasWrong = form.isWrong;
@@ -245,6 +232,9 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
             _cancelCycle();
             if (widget.selectedExercise.isHold) _updateHold(false);
           }
+
+          // One rebuild per frame (this used to be two or three).
+          if (mounted) setState(() {});
         }
       } catch (e) {
         debugPrint("ML Kit Detection Error: $e");
@@ -395,58 +385,26 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
 
       case ExerciseType.bicepCurl:
         {
-          // Track BOTH arms independently. The old code took min(left,right)
-          // every frame, so circling an arm (which drags the shoulder along
-          // and momentarily "bends" the elbow) looked identical to a curl.
-          // A real curl is now verified by requiring the wrist to travel
-          // vertically toward the shoulder while the elbow stays pinned low.
-          final left = _jointAngle(
-            landmarks,
-            PoseLandmarkType.leftShoulder,
-            PoseLandmarkType.leftElbow,
-            PoseLandmarkType.leftWrist,
-          );
-          final right = _jointAngle(
-            landmarks,
-            PoseLandmarkType.rightShoulder,
-            PoseLandmarkType.rightElbow,
-            PoseLandmarkType.rightWrist,
-          );
+          // Use whichever arm is more bent (the working arm). The resting
+          // arm hangs straight, so it never triggers a rep by itself.
+          final angles = <double?>[
+            _jointAngle(
+              landmarks,
+              PoseLandmarkType.leftShoulder,
+              PoseLandmarkType.leftElbow,
+              PoseLandmarkType.leftWrist,
+            ),
+            _jointAngle(
+              landmarks,
+              PoseLandmarkType.rightShoulder,
+              PoseLandmarkType.rightElbow,
+              PoseLandmarkType.rightWrist,
+            ),
+          ].whereType<double>().toList();
 
-          double? best;
-          PoseLandmark? bestElbow;
-          PoseLandmark? bestWrist;
-          for (final entry in [
-            (left, PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist),
-            (right, PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist),
-          ]) {
-            final angle = entry.$1;
-            if (angle == null) continue;
-            if (best == null || angle < best!) {
-              best = angle;
-              bestElbow = landmarks[entry.$2];
-              bestWrist = landmarks[entry.$3];
-            }
-          }
-
-          if (best != null && bestElbow != null && bestWrist != null) {
-            calculatedAngle = best;
-
-            // Elbow must hang below the shoulder line (image y grows down).
-            final shoulderY = landmarks[PoseLandmarkType.leftShoulder]?.y ??
-                landmarks[PoseLandmarkType.rightShoulder]?.y;
-            final elbowPinned =
-                shoulderY == null || bestElbow.y > shoulderY - 0.05;
-
-            // Wrist must be near the shoulder height — the top of a curl.
-            // Circling sends the wrist out to the sides, not up.
-            final wristNearShoulder = shoulderY != null &&
-                bestWrist.y <= shoulderY + 0.12;
-
-            isValidRep =
-                calculatedAngle <= exercise.targetAngle &&
-                elbowPinned &&
-                wristNearShoulder;
+          if (angles.isNotEmpty) {
+            calculatedAngle = angles.reduce(min);
+            isValidRep = calculatedAngle <= exercise.targetAngle;
             isRestPosition = calculatedAngle >= exercise.restAngle;
           }
         }
@@ -513,15 +471,13 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
     // that look like the patient leaving the rest position.
     if (calculatedAngle == 0.0) return;
 
-    setState(() {
-      _currentAngle = calculatedAngle;
-      _advanceRepCycle(
-        angle: calculatedAngle,
-        isValidRep: isValidRep,
-        isRest: isRestPosition,
-        form: form,
-      );
-    });
+    _currentAngle = calculatedAngle;
+    _advanceRepCycle(
+      angle: calculatedAngle,
+      isValidRep: isValidRep,
+      isRest: isRestPosition,
+      form: form,
+    );
 
     _checkCompletion();
   }
@@ -583,11 +539,13 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
         ms >= 500) {
       // They started the movement but never got to the target angle.
       final fb = _rangeFeedback(exercise.type);
-      _rejectRep(FormIssue(
-        code: FormIssueCode.shortRange,
-        message: 'Rep not counted. ${fb.message}',
-        landmarks: fb.landmarks,
-      ));
+      _rejectRep(
+        FormIssue(
+          code: FormIssueCode.shortRange,
+          message: 'Rep not counted. ${fb.message}',
+          landmarks: fb.landmarks,
+        ),
+      );
     }
   }
 
@@ -697,7 +655,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
             _currentAngle = standingKneeAngle;
             // Standing leg mostly straight AND other foot lifted by at
             // least 15% of the standing leg's length.
-            inPosition = standingKneeAngle >= 150.0 && footLift >= 0.15 * legLength;
+            inPosition =
+                standingKneeAngle >= 150.0 && footLift >= 0.15 * legLength;
           }
         }
         break;
@@ -750,14 +709,12 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       _holdStart ??= now;
       final elapsed = now.difference(_holdStart!).inMilliseconds / 1000.0;
 
-      setState(() {
-        _holdElapsed = elapsed > needed ? needed.toDouble() : elapsed;
-      });
+      _holdElapsed = elapsed > needed ? needed.toDouble() : elapsed;
 
       if (elapsed >= needed && !_holdCounted) {
         _holdCounted = true;
         _repScores.add(1.0);
-        setState(() => _repCounter++);
+        _repCounter++;
         _triggerFeedback();
         _checkCompletion();
       }
@@ -765,11 +722,9 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       _lostSince ??= now;
       if (now.difference(_lostSince!) > _holdGrace) {
         if (_holdStart != null || _holdElapsed != 0.0) {
-          setState(() {
-            _holdStart = null;
-            _holdCounted = false; // release, then hold again for the next one
-            _holdElapsed = 0.0;
-          });
+          _holdStart = null;
+          _holdCounted = false; // release, then hold again for the next one
+          _holdElapsed = 0.0;
         }
       }
     }
@@ -828,7 +783,11 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.check_circle_rounded, color: Colors.teal, size: 64),
+            const Icon(
+              Icons.check_circle_rounded,
+              color: Colors.teal,
+              size: 64,
+            ),
             const SizedBox(height: 12),
             const Text(
               'Session Complete!',
@@ -885,11 +844,16 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
         InputImageFormatValue.fromRawValue(image.format.raw) ??
         InputImageFormat.nv21;
 
-    final WriteBuffer allBytes = WriteBuffer();
-    for (final Plane plane in image.planes) {
-      allBytes.putUint8List(plane.bytes);
+    final Uint8List bytes;
+    if (image.planes.length == 1) {
+      bytes = image.planes.first.bytes; // NV21 arrives as one plane: no copy
+    } else {
+      final WriteBuffer allBytes = WriteBuffer();
+      for (final Plane plane in image.planes) {
+        allBytes.putUint8List(plane.bytes);
+      }
+      bytes = allBytes.done().buffer.asUint8List();
     }
-    final bytes = allBytes.done().buffer.asUint8List();
 
     final metadata = InputImageMetadata(
       size: Size(image.width.toDouble(), image.height.toDouble()),
@@ -919,7 +883,12 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
     final form = _effectiveForm;
     final isCorrect = !form.isWrong;
 
+    // The camera reports its natural shape as width/height in landscape, so a
+    // portrait screen needs the inverse.
+    final previewAspect = 1 / _cameraController!.value.aspectRatio;
+
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
         title: Text(exercise.title),
         backgroundColor: isCorrect ? Colors.teal : Colors.red,
@@ -934,38 +903,34 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // Undistorted preview: the sensor frame keeps its native aspect
-          // ratio and is centre-cropped to fill the screen (BoxFit.cover),
-          // instead of being stretched 4:3 -> 16:9 like before.
-          //
-          // The `camera` package does NOT mirror the front preview (the
-          // CameraX-native-mirroring assumption was wrong), so
-          // _AspectCoverPreview now flips it horizontally to give the
-          // familiar selfie/mirror view. ML Kit analyses the unmirrored
-          // frames, so PosePainter mirrors the landmarks by the same
-          // amount (mirrorFrontCamera below). Both flip together, so the
-          // skeleton overlays the video exactly: raise your right hand ->
-          // the skeleton's hand rises on the RIGHT side of the screen and
-          // stays glued to your real hand.
-          _AspectCoverPreview(controller: _cameraController!),
-
-          if (_imageSize != null && _detectedPoses.isNotEmpty)
-            CustomPaint(
-              painter: PosePainter(
-                _detectedPoses,
-                _imageSize!,
-                _rotation,
-                isCorrect,
-                _lensDirection,
-                // Mirror the landmarks horizontally for the front camera so
-                // the skeleton matches the mirrored (selfie-style) view the
-                // patient expects, while staying aligned with the video.
-                mirrorFrontCamera:
-                    _lensDirection == CameraLensDirection.front,
-                flaggedLandmarks: form.flagged,
-                issues: form.issues,
+          // Center + AspectRatio keeps the preview at the camera's real
+          // proportions instead of stretching it to the screen. The skeleton is
+          // painted inside the same box so the joints line up with the video.
+          Center(
+            child: AspectRatio(
+              aspectRatio: previewAspect,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  CameraPreview(_cameraController!),
+                  if (_imageSize != null && _detectedPoses.isNotEmpty)
+                    RepaintBoundary(
+                      child: CustomPaint(
+                        painter: PosePainter(
+                          _detectedPoses,
+                          _imageSize!,
+                          _rotation,
+                          isCorrect,
+                          _lensDirection,
+                          flaggedLandmarks: form.flagged,
+                          issues: form.issues,
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
+          ),
 
           // "Keep Centered: ..." / "Wrong Form: ..." message
           Positioned(
@@ -1103,16 +1068,13 @@ class _AspectCoverPreview extends StatelessWidget {
 
     // previewSize is in sensor orientation (landscape). On a portrait device
     // the displayed frame is rotated 90°, so swap width and height.
-    final isLandscape = MediaQuery.of(context).orientation ==
-        Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
     final frame = isLandscape ? size : Size(size.height, size.width);
 
     final preview = LayoutBuilder(
       builder: (context, constraints) {
-        final screen = Size(
-          constraints.maxWidth,
-          constraints.maxHeight,
-        );
+        final screen = Size(constraints.maxWidth, constraints.maxHeight);
 
         // Uniform "cover" scale: big enough for both dimensions.
         final scale = max(
@@ -1157,7 +1119,8 @@ class _AspectCoverPreview extends StatelessWidget {
 }
 
 /// Top-of-screen message: red bold label + the current fault, like the mockup.
-class _FormBanner extends StatelessWidget {  final FormResult form;
+class _FormBanner extends StatelessWidget {
+  final FormResult form;
   const _FormBanner({required this.form});
 
   @override

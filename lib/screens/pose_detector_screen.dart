@@ -99,7 +99,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
   /// Anti-flail rules for rep-based exercises.
   static const int _minRepMs = 700; // leave-rest -> back toward rest
   static const int _faultFrameLimit = 3; // faulty frames allowed in one rep
-  static const double _reArmProgress = 0.7; // must drop below this to re-hit target
+  static const double _reArmProgress =
+      0.7; // must drop below this to re-hit target
 
   /// Extra per-exercise limits.
   static const double _raiseMaxDeg = 125.0; // arm above this = too high
@@ -119,8 +120,9 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
   Future<void> _initAudio() async {
     try {
       await _audioPlayer.setAudioContext(
-        AudioContextConfig(focus: AudioContextConfigFocus.mixWithOthers)
-            .build(),
+        AudioContextConfig(
+          focus: AudioContextConfigFocus.mixWithOthers,
+        ).build(),
       );
       await _audioPlayer.setPlayerMode(PlayerMode.lowLatency);
       await _audioPlayer.setReleaseMode(ReleaseMode.stop);
@@ -408,7 +410,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
 
       final rotation =
           inputImage.metadata?.rotation ?? InputImageRotation.rotation0deg;
-      final swap = rotation == InputImageRotation.rotation90deg ||
+      final swap =
+          rotation == InputImageRotation.rotation90deg ||
           rotation == InputImageRotation.rotation270deg;
       final w = image.width.toDouble();
       final h = image.height.toDouble();
@@ -435,14 +438,16 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       ExerciseType.forwardRaise ||
       ExerciseType.sideRaise ||
       ExerciseType.forwardPush ||
-      ExerciseType.bicepCurl =>
-        true,
+      ExerciseType.bicepCurl => true,
       _ => false,
     };
     if (!armExercise) return f;
-    final kept =
-        f.issues.where((i) => i.code != FormIssueCode.legsMoving).toList();
-    return kept.isEmpty ? FormResult.ok : FormResult(FormStatus.wrongForm, kept);
+    final kept = f.issues
+        .where((i) => i.code != FormIssueCode.legsMoving)
+        .toList();
+    return kept.isEmpty
+        ? FormResult.ok
+        : FormResult(FormStatus.wrongForm, kept);
   }
 
   // ---------------------------------------------------------------------
@@ -492,14 +497,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
 
   /// Shoulder-mid to hip-mid distance in pixels, or null if not visible.
   double? _torsoPx(Map<PoseLandmarkType, PoseLandmark> lm) {
-    final s = [lm[PoseLandmarkType.leftShoulder], lm[PoseLandmarkType.rightShoulder]]
-        .where(_vis)
-        .cast<PoseLandmark>()
-        .toList();
-    final h = [lm[PoseLandmarkType.leftHip], lm[PoseLandmarkType.rightHip]]
-        .where(_vis)
-        .cast<PoseLandmark>()
-        .toList();
+    final s = [
+      lm[PoseLandmarkType.leftShoulder],
+      lm[PoseLandmarkType.rightShoulder],
+    ].where(_vis).cast<PoseLandmark>().toList();
+    final h = [
+      lm[PoseLandmarkType.leftHip],
+      lm[PoseLandmarkType.rightHip],
+    ].where(_vis).cast<PoseLandmark>().toList();
     if (s.isEmpty || h.isEmpty) return null;
     final sx = s.map((p) => p.x).reduce((a, b) => a + b) / s.length;
     final sy = s.map((p) => p.y).reduce((a, b) => a + b) / s.length;
@@ -556,12 +561,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
             }
           }
           if (swung.isNotEmpty) {
-            out.add(FormIssue(
-              code: FormIssueCode.elbowDrift,
-              message: 'Keep your elbows by your sides. Only bend the elbow.',
-              landmarks: swung,
-              anchor: swung.first,
-            ));
+            out.add(
+              FormIssue(
+                code: FormIssueCode.elbowDrift,
+                message: 'Keep your elbows by your sides. Only bend the elbow.',
+                landmarks: swung,
+                anchor: swung.first,
+              ),
+            );
           }
         }
         break;
@@ -588,12 +595,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
             if (a != null && a > _raiseMaxDeg) high.add(s.$3);
           }
           if (high.isNotEmpty) {
-            out.add(FormIssue(
-              code: FormIssueCode.shortRange,
-              message: 'Too high. Stop at shoulder height.',
-              landmarks: high,
-              anchor: high.first,
-            ));
+            out.add(
+              FormIssue(
+                code: FormIssueCode.shortRange,
+                message: 'Too high. Stop at shoulder height.',
+                landmarks: high,
+                anchor: high.first,
+              ),
+            );
           }
         }
         break;
@@ -626,12 +635,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
               }
             }
             if (off.isNotEmpty) {
-              out.add(FormIssue(
-                code: FormIssueCode.shortRange,
-                message: 'Push straight ahead at chest height.',
-                landmarks: off,
-                anchor: off.first,
-              ));
+              out.add(
+                FormIssue(
+                  code: FormIssueCode.shortRange,
+                  message: 'Push straight ahead at chest height.',
+                  landmarks: off,
+                  anchor: off.first,
+                ),
+              );
             }
           }
         }
@@ -647,9 +658,11 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
           final shoulders = [ls, rs].where(_vis).cast<PoseLandmark>().toList();
           final hips = [lh, rh].where(_vis).cast<PoseLandmark>().toList();
           if (shoulders.isNotEmpty && hips.isNotEmpty) {
-            final sx = shoulders.map((p) => p.x).reduce((a, b) => a + b) /
+            final sx =
+                shoulders.map((p) => p.x).reduce((a, b) => a + b) /
                 shoulders.length;
-            final sy = shoulders.map((p) => p.y).reduce((a, b) => a + b) /
+            final sy =
+                shoulders.map((p) => p.y).reduce((a, b) => a + b) /
                 shoulders.length;
             final hx =
                 hips.map((p) => p.x).reduce((a, b) => a + b) / hips.length;
@@ -657,19 +670,21 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
                 hips.map((p) => p.y).reduce((a, b) => a + b) / hips.length;
             final lean = atan2((sx - hx).abs(), hy - sy) * 180 / pi;
             if (lean > _sitToStandMaxLeanDeg) {
-              out.add(FormIssue(
-                code: FormIssueCode.trunkLean,
-                message: "Don't lean too far forward. Keep your chest up.",
-                landmarks: {
-                  PoseLandmarkType.leftShoulder,
-                  PoseLandmarkType.rightShoulder,
-                  PoseLandmarkType.leftHip,
-                  PoseLandmarkType.rightHip,
-                },
-                anchor: _vis(ls)
-                    ? PoseLandmarkType.leftShoulder
-                    : PoseLandmarkType.rightShoulder,
-              ));
+              out.add(
+                FormIssue(
+                  code: FormIssueCode.trunkLean,
+                  message: "Don't lean too far forward. Keep your chest up.",
+                  landmarks: {
+                    PoseLandmarkType.leftShoulder,
+                    PoseLandmarkType.rightShoulder,
+                    PoseLandmarkType.leftHip,
+                    PoseLandmarkType.rightHip,
+                  },
+                  anchor: _vis(ls)
+                      ? PoseLandmarkType.leftShoulder
+                      : PoseLandmarkType.rightShoulder,
+                ),
+              );
             }
           }
         }
@@ -693,12 +708,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
                 : PoseLandmarkType.rightAnkle;
             final a = _visAngle(lm, hip, knee, ankle);
             if (a != null && a < 150) {
-              out.add(FormIssue(
-                code: FormIssueCode.kneeBent,
-                message: 'Keep your standing leg straight.',
-                landmarks: {knee, ankle},
-                anchor: knee,
-              ));
+              out.add(
+                FormIssue(
+                  code: FormIssueCode.kneeBent,
+                  message: 'Keep your standing leg straight.',
+                  landmarks: {knee, ankle},
+                  anchor: knee,
+                ),
+              );
             }
           }
         }
@@ -707,26 +724,36 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       case ExerciseType.wallSit:
         {
           final angles = <double?>[
-            _visAngle(lm, PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee,
-                PoseLandmarkType.leftAnkle),
-            _visAngle(lm, PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee,
-                PoseLandmarkType.rightAnkle),
+            _visAngle(
+              lm,
+              PoseLandmarkType.leftHip,
+              PoseLandmarkType.leftKnee,
+              PoseLandmarkType.leftAnkle,
+            ),
+            _visAngle(
+              lm,
+              PoseLandmarkType.rightHip,
+              PoseLandmarkType.rightKnee,
+              PoseLandmarkType.rightAnkle,
+            ),
           ].whereType<double>().toList();
           if (angles.isNotEmpty) {
             final knee = _average(angles);
             final diff = knee - exercise.targetAngle;
             if (diff.abs() > _wallSitFaultDeg) {
-              out.add(FormIssue(
-                code: FormIssueCode.shortRange,
-                message: diff > 0
-                    ? 'Slide lower until your knees are at 90°.'
-                    : 'Too low. Rise until your knees are at 90°.',
-                landmarks: {
-                  PoseLandmarkType.leftKnee,
-                  PoseLandmarkType.rightKnee,
-                },
-                anchor: PoseLandmarkType.leftKnee,
-              ));
+              out.add(
+                FormIssue(
+                  code: FormIssueCode.shortRange,
+                  message: diff > 0
+                      ? 'Slide lower until your knees are at 90°.'
+                      : 'Too low. Rise until your knees are at 90°.',
+                  landmarks: {
+                    PoseLandmarkType.leftKnee,
+                    PoseLandmarkType.rightKnee,
+                  },
+                  anchor: PoseLandmarkType.leftKnee,
+                ),
+              );
             }
           }
         }
@@ -798,13 +825,17 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       return;
     }
 
-    final shoulder = landmarks[PoseLandmarkType.leftShoulder] ??
+    final shoulder =
+        landmarks[PoseLandmarkType.leftShoulder] ??
         landmarks[PoseLandmarkType.rightShoulder];
-    final hip = landmarks[PoseLandmarkType.leftHip] ??
+    final hip =
+        landmarks[PoseLandmarkType.leftHip] ??
         landmarks[PoseLandmarkType.rightHip];
-    final knee = landmarks[PoseLandmarkType.leftKnee] ??
+    final knee =
+        landmarks[PoseLandmarkType.leftKnee] ??
         landmarks[PoseLandmarkType.rightKnee];
-    final ankle = landmarks[PoseLandmarkType.leftAnkle] ??
+    final ankle =
+        landmarks[PoseLandmarkType.leftAnkle] ??
         landmarks[PoseLandmarkType.rightAnkle];
 
     double calculatedAngle = 0.0;
@@ -941,7 +972,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
           if (best != null && bestElbow != null && bestWrist != null) {
             calculatedAngle = best;
 
-            final shoulderY = landmarks[PoseLandmarkType.leftShoulder]?.y ??
+            final shoulderY =
+                landmarks[PoseLandmarkType.leftShoulder]?.y ??
                 landmarks[PoseLandmarkType.rightShoulder]?.y;
             // Landmark coordinates are PIXELS, so tolerances scale with body.
             final torsoPx = (shoulder != null && hip != null)
@@ -952,7 +984,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
             final wristNearShoulder =
                 shoulderY != null && bestWrist.y <= shoulderY + 0.35 * torsoPx;
 
-            isValidRep = calculatedAngle <= exercise.targetAngle &&
+            isValidRep =
+                calculatedAngle <= exercise.targetAngle &&
                 elbowPinned &&
                 wristNearShoulder;
             isRestPosition = calculatedAngle >= _restAngle;
@@ -1021,8 +1054,9 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       final restA = _restAngle;
       final span = exercise.targetAngle - restA;
       final returnAngle = restA + span * _restZone;
-      isRestPosition =
-          span >= 0 ? calculatedAngle <= returnAngle : calculatedAngle >= returnAngle;
+      isRestPosition = span >= 0
+          ? calculatedAngle <= returnAngle
+          : calculatedAngle >= returnAngle;
     }
 
     // 0.0 means "couldn't measure" (a needed landmark was missing).
@@ -1127,23 +1161,29 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
         .inMilliseconds;
 
     if (_stage == "up") {
-      final bad = _cycleViolation ??
+      final bad =
+          _cycleViolation ??
           (_cycleFaultFrames >= _faultFrameLimit ? _cycleFaultIssue : null);
 
       if (bad != null) {
         _rejectRep(bad.withMessage('Rep not counted. ${bad.message}'));
       } else if (_targetHits > 1) {
-        _rejectRep(const FormIssue(
-          code: FormIssueCode.tooFast,
-          message: 'Rep not counted. Use one smooth movement, not back and forth.',
-          landmarks: <PoseLandmarkType>{},
-        ));
+        _rejectRep(
+          const FormIssue(
+            code: FormIssueCode.tooFast,
+            message:
+                'Rep not counted. Use one smooth movement, not back and forth.',
+            landmarks: <PoseLandmarkType>{},
+          ),
+        );
       } else if (ms < _minRepMs) {
-        _rejectRep(const FormIssue(
-          code: FormIssueCode.tooFast,
-          message: 'Rep not counted. Too fast. Slow down and control it.',
-          landmarks: <PoseLandmarkType>{},
-        ));
+        _rejectRep(
+          const FormIssue(
+            code: FormIssueCode.tooFast,
+            message: 'Rep not counted. Too fast. Slow down and control it.',
+            landmarks: <PoseLandmarkType>{},
+          ),
+        );
       } else {
         _repCounter++;
         _repScores.add(1.0);
@@ -1261,8 +1301,11 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
             final standKnee = leftIsStanding ? lKnee : rKnee;
             final standAnkle = leftIsStanding ? lAnkle : rAnkle;
 
-            final standingKneeAngle =
-                _calculateAngle(standHip, standKnee, standAnkle);
+            final standingKneeAngle = _calculateAngle(
+              standHip,
+              standKnee,
+              standAnkle,
+            );
             final legLength = _distance(standHip, standAnkle);
             final footLift = (lAnkle.y - rAnkle.y).abs();
 
@@ -1440,9 +1483,11 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     CameraDescription camera,
   ) {
     final sensorOrientation = camera.sensorOrientation;
-    final rotation = InputImageRotationValue.fromRawValue(sensorOrientation) ??
+    final rotation =
+        InputImageRotationValue.fromRawValue(sensorOrientation) ??
         InputImageRotation.rotation0deg;
-    final format = InputImageFormatValue.fromRawValue(image.format.raw) ??
+    final format =
+        InputImageFormatValue.fromRawValue(image.format.raw) ??
         InputImageFormat.nv21;
 
     final WriteBuffer allBytes = WriteBuffer();
@@ -1704,8 +1749,9 @@ class _AspectCoverPreview extends StatelessWidget {
     final shortSide = min(size.width, size.height);
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
-    final frame =
-        isLandscape ? Size(longSide, shortSide) : Size(shortSide, longSide);
+    final frame = isLandscape
+        ? Size(longSide, shortSide)
+        : Size(shortSide, longSide);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1895,7 +1941,8 @@ class PosePainter extends CustomPainter {
         final p1 = points[bone[0]];
         final p2 = points[bone[1]];
         if (p1 == null || p2 == null) continue;
-        final hot = wrong &&
+        final hot =
+            wrong &&
             (flaggedLandmarks.contains(bone[0]) ||
                 flaggedLandmarks.contains(bone[1]));
         canvas.drawLine(p1, p2, hot ? hotLinePaint : linePaint);

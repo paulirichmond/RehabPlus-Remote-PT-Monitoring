@@ -141,7 +141,8 @@ class PosePainter extends CustomPainter {
         final p1 = points[bone[0]];
         final p2 = points[bone[1]];
         if (p1 == null || p2 == null) continue;
-        final hot = wrong &&
+        final hot =
+            wrong &&
             (flaggedLandmarks.contains(bone[0]) ||
                 flaggedLandmarks.contains(bone[1]));
         canvas.drawLine(p1, p2, hot ? hotLinePaint : linePaint);

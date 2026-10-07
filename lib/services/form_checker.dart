@@ -72,9 +72,7 @@ class FormResult {
   bool get isNotInFrame => status == FormStatus.notInFrame;
   FormIssue? get primary => issues.isEmpty ? null : issues.first;
 
-  Set<PoseLandmarkType> get flagged => {
-        for (final i in issues) ...i.landmarks,
-      };
+  Set<PoseLandmarkType> get flagged => {for (final i in issues) ...i.landmarks};
 
   /// Returns a copy with [issue] put first (used for one-off events such as
   /// "rep not counted" that outlive the frame that caused them).
@@ -316,8 +314,8 @@ class FormChecker {
   FormChecker(
     this.exercise, {
     FormThresholds thresholds = FormThresholds.strict,
-  })  : th = thresholds,
-        _profile = _profileFor(exercise.type);
+  }) : th = thresholds,
+       _profile = _profileFor(exercise.type);
 
   static const double _smoothing = 0.6; // EMA weight of the newest frame
   static const int _gapMs = 300; // a fault that vanishes this long restarts
@@ -333,7 +331,8 @@ class FormChecker {
 
   static final FormIssue _notInFrameIssue = FormIssue(
     code: FormIssueCode.notInFrame,
-    message: 'Please step into the frame and center your body to begin tracking.',
+    message:
+        'Please step into the frame and center your body to begin tracking.',
     landmarks: <PoseLandmarkType>{},
   );
 
@@ -355,10 +354,7 @@ class FormChecker {
     return _notInFrame;
   }
 
-  FormResult evaluate(
-    Map<PoseLandmarkType, PoseLandmark> lm, {
-    DateTime? now,
-  }) {
+  FormResult evaluate(Map<PoseLandmarkType, PoseLandmark> lm, {DateTime? now}) {
     _now = (now ?? DateTime.now()).millisecondsSinceEpoch;
 
     if (!_requiredVisible(lm)) {
@@ -474,7 +470,8 @@ class FormChecker {
       maxY = maxY == null ? p.dy : max(maxY, p.dy);
       n++;
     }
-    if (n < 3) return null; // not enough evidence yet (3 keeps it working at low fps)
+    if (n < 3)
+      return null; // not enough evidence yet (3 keeps it working at low fps)
     return Offset(maxX! - minX!, maxY! - minY!).distance / torso;
   }
 
@@ -497,7 +494,10 @@ class FormChecker {
   // Checks
   // -------------------------------------------------------------------------
 
-  PoseLandmarkType _firstOf(Set<PoseLandmarkType> set, [PoseLandmarkType? prefer]) {
+  PoseLandmarkType _firstOf(
+    Set<PoseLandmarkType> set, [
+    PoseLandmarkType? prefer,
+  ]) {
     if (prefer != null && set.contains(prefer)) return prefer;
     return set.first;
   }
@@ -512,20 +512,24 @@ class FormChecker {
       (_arms.contains(t) ? armsBad : legsBad).add(t);
     }
     if (armsBad.isNotEmpty) {
-      out.add(FormIssue(
-        code: FormIssueCode.armsMoving,
-        message: 'Arms are moving too much. Keep them still.',
-        landmarks: armsBad,
-        anchor: _firstOf(armsBad, PoseLandmarkType.rightWrist),
-      ));
+      out.add(
+        FormIssue(
+          code: FormIssueCode.armsMoving,
+          message: 'Arms are moving too much. Keep them still.',
+          landmarks: armsBad,
+          anchor: _firstOf(armsBad, PoseLandmarkType.rightWrist),
+        ),
+      );
     }
     if (legsBad.isNotEmpty) {
-      out.add(FormIssue(
-        code: FormIssueCode.legsMoving,
-        message: 'Keep your feet and legs still.',
-        landmarks: legsBad,
-        anchor: _firstOf(legsBad, PoseLandmarkType.rightAnkle),
-      ));
+      out.add(
+        FormIssue(
+          code: FormIssueCode.legsMoving,
+          message: 'Keep your feet and legs still.',
+          landmarks: legsBad,
+          anchor: _firstOf(legsBad, PoseLandmarkType.rightAnkle),
+        ),
+      );
     }
   }
 
@@ -541,14 +545,16 @@ class FormChecker {
     // Median, so one jittery landmark can't trigger it on its own.
     final median = ranges[(ranges.length - 1) ~/ 2];
     if (median > th.torsoSwayRange) {
-      out.add(FormIssue(
-        code: FormIssueCode.bodySway,
-        message: 'Body is swaying. Stay steady.',
-        landmarks: Set.of(_torso),
-        anchor: _smooth.containsKey(PoseLandmarkType.leftShoulder)
-            ? PoseLandmarkType.leftShoulder
-            : PoseLandmarkType.rightShoulder,
-      ));
+      out.add(
+        FormIssue(
+          code: FormIssueCode.bodySway,
+          message: 'Body is swaying. Stay steady.',
+          landmarks: Set.of(_torso),
+          anchor: _smooth.containsKey(PoseLandmarkType.leftShoulder)
+              ? PoseLandmarkType.leftShoulder
+              : PoseLandmarkType.rightShoulder,
+        ),
+      );
     }
   }
 
@@ -559,12 +565,14 @@ class FormChecker {
       if (v != null && v > th.maxWorkingSpeed) fast.add(t);
     }
     if (fast.isNotEmpty) {
-      out.add(FormIssue(
-        code: FormIssueCode.tooFast,
-        message: 'Too fast. Slow down and control the movement.',
-        landmarks: fast,
-        anchor: fast.first,
-      ));
+      out.add(
+        FormIssue(
+          code: FormIssueCode.tooFast,
+          message: 'Too fast. Slow down and control the movement.',
+          landmarks: fast,
+          anchor: fast.first,
+        ),
+      );
     }
   }
 
@@ -576,14 +584,16 @@ class FormChecker {
     final d = s - h; // image y grows downward, so "up" is negative dy
     final lean = atan2(d.dx.abs(), -d.dy) * 180 / pi;
     if (lean > th.maxTrunkLeanDeg) {
-      out.add(FormIssue(
-        code: FormIssueCode.trunkLean,
-        message: 'Your back is bent. Straighten your body.',
-        landmarks: Set.of(_torso),
-        anchor: _smooth.containsKey(PoseLandmarkType.leftShoulder)
-            ? PoseLandmarkType.leftShoulder
-            : PoseLandmarkType.rightShoulder,
-      ));
+      out.add(
+        FormIssue(
+          code: FormIssueCode.trunkLean,
+          message: 'Your back is bent. Straighten your body.',
+          landmarks: Set.of(_torso),
+          anchor: _smooth.containsKey(PoseLandmarkType.leftShoulder)
+              ? PoseLandmarkType.leftShoulder
+              : PoseLandmarkType.rightShoulder,
+        ),
+      );
     }
   }
 
@@ -595,8 +605,8 @@ class FormChecker {
   ) {
     final p1 = lm[a], p2 = lm[b], p3 = lm[c];
     if (!_ok(p1) || !_ok(p2) || !_ok(p3)) return null;
-    final rad = atan2(p3!.y - p2!.y, p3.x - p2.x) -
-        atan2(p1!.y - p2.y, p1.x - p2.x);
+    final rad =
+        atan2(p3!.y - p2!.y, p3.x - p2.x) - atan2(p1!.y - p2.y, p1.x - p2.x);
     var deg = (rad * 180 / pi).abs();
     if (deg > 180) deg = 360 - deg;
     return deg;
@@ -608,31 +618,41 @@ class FormChecker {
   ) {
     switch (exercise.type) {
       case ExerciseType.kneeExtension:
-        final l = _angle(lm, PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee,
-            PoseLandmarkType.leftAnkle);
-        final r = _angle(lm, PoseLandmarkType.rightHip,
-            PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle);
+        final l = _angle(
+          lm,
+          PoseLandmarkType.leftHip,
+          PoseLandmarkType.leftKnee,
+          PoseLandmarkType.leftAnkle,
+        );
+        final r = _angle(
+          lm,
+          PoseLandmarkType.rightHip,
+          PoseLandmarkType.rightKnee,
+          PoseLandmarkType.rightAnkle,
+        );
         if (l != null && r != null) {
           final working = max(l, r);
           final resting = min(l, r);
           // Both legs straightened = cheating the rep.
           if (working >= exercise.targetAngle && resting >= 120) {
             final leftIsResting = l < r;
-            out.add(FormIssue(
-              code: FormIssueCode.otherLeg,
-              message: 'Keep your other leg bent and still.',
-              landmarks: {
-                leftIsResting
+            out.add(
+              FormIssue(
+                code: FormIssueCode.otherLeg,
+                message: 'Keep your other leg bent and still.',
+                landmarks: {
+                  leftIsResting
+                      ? PoseLandmarkType.leftKnee
+                      : PoseLandmarkType.rightKnee,
+                  leftIsResting
+                      ? PoseLandmarkType.leftAnkle
+                      : PoseLandmarkType.rightAnkle,
+                },
+                anchor: leftIsResting
                     ? PoseLandmarkType.leftKnee
                     : PoseLandmarkType.rightKnee,
-                leftIsResting
-                    ? PoseLandmarkType.leftAnkle
-                    : PoseLandmarkType.rightAnkle,
-              },
-              anchor: leftIsResting
-                  ? PoseLandmarkType.leftKnee
-                  : PoseLandmarkType.rightKnee,
-            ));
+              ),
+            );
           }
         }
         break;
@@ -640,21 +660,31 @@ class FormChecker {
       case ExerciseType.straightLegRaise:
         // Raised leg must stay straight.
         for (final side in const [true, false]) {
-          final sh = side ? PoseLandmarkType.leftShoulder : PoseLandmarkType.rightShoulder;
-          final hp = side ? PoseLandmarkType.leftHip : PoseLandmarkType.rightHip;
-          final kn = side ? PoseLandmarkType.leftKnee : PoseLandmarkType.rightKnee;
-          final an = side ? PoseLandmarkType.leftAnkle : PoseLandmarkType.rightAnkle;
+          final sh = side
+              ? PoseLandmarkType.leftShoulder
+              : PoseLandmarkType.rightShoulder;
+          final hp = side
+              ? PoseLandmarkType.leftHip
+              : PoseLandmarkType.rightHip;
+          final kn = side
+              ? PoseLandmarkType.leftKnee
+              : PoseLandmarkType.rightKnee;
+          final an = side
+              ? PoseLandmarkType.leftAnkle
+              : PoseLandmarkType.rightAnkle;
           final hipAngle = _angle(lm, sh, hp, kn);
           final kneeAngle = _angle(lm, hp, kn, an);
           if (hipAngle == null || kneeAngle == null) continue;
           final lifted = hipAngle < exercise.restAngle - 10;
           if (lifted && kneeAngle < 150) {
-            out.add(FormIssue(
-              code: FormIssueCode.kneeBent,
-              message: 'Keep your knee straight.',
-              landmarks: {kn, an},
-              anchor: kn,
-            ));
+            out.add(
+              FormIssue(
+                code: FormIssueCode.kneeBent,
+                message: 'Keep your knee straight.',
+                landmarks: {kn, an},
+                anchor: kn,
+              ),
+            );
           }
           break; // first side with a full chain is enough
         }
@@ -666,22 +696,35 @@ class FormChecker {
           // trunk, the patient is doing something else (circling, shrugging,
           // swinging) even if the wrist speed looks harmless.
           final swung = <PoseLandmarkType>{};
-          void side(PoseLandmarkType hp, PoseLandmarkType sh, PoseLandmarkType el) {
+          void side(
+            PoseLandmarkType hp,
+            PoseLandmarkType sh,
+            PoseLandmarkType el,
+          ) {
             final a = _angle(lm, hp, sh, el);
             if (a != null && a > th.maxUpperArmSwingDeg) swung.add(el);
           }
 
-          side(PoseLandmarkType.leftHip, PoseLandmarkType.leftShoulder,
-              PoseLandmarkType.leftElbow);
-          side(PoseLandmarkType.rightHip, PoseLandmarkType.rightShoulder,
-              PoseLandmarkType.rightElbow);
+          side(
+            PoseLandmarkType.leftHip,
+            PoseLandmarkType.leftShoulder,
+            PoseLandmarkType.leftElbow,
+          );
+          side(
+            PoseLandmarkType.rightHip,
+            PoseLandmarkType.rightShoulder,
+            PoseLandmarkType.rightElbow,
+          );
           if (swung.isNotEmpty) {
-            out.add(FormIssue(
-              code: FormIssueCode.elbowDrift,
-              message: 'Keep your elbows pinned to your sides. Only bend the elbow.',
-              landmarks: swung,
-              anchor: swung.first,
-            ));
+            out.add(
+              FormIssue(
+                code: FormIssueCode.elbowDrift,
+                message:
+                    'Keep your elbows pinned to your sides. Only bend the elbow.',
+                landmarks: swung,
+                anchor: swung.first,
+              ),
+            );
           }
         }
         break;
@@ -692,22 +735,34 @@ class FormChecker {
           // Assumes straight-arm raises. Delete this case if your clinic's
           // protocol allows a bent elbow.
           final bent = <PoseLandmarkType>{};
-          void side(PoseLandmarkType sh, PoseLandmarkType el, PoseLandmarkType wr) {
+          void side(
+            PoseLandmarkType sh,
+            PoseLandmarkType el,
+            PoseLandmarkType wr,
+          ) {
             final a = _angle(lm, sh, el, wr);
             if (a != null && a < th.minStraightArmDeg) bent.add(el);
           }
 
-          side(PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow,
-              PoseLandmarkType.leftWrist);
-          side(PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow,
-              PoseLandmarkType.rightWrist);
+          side(
+            PoseLandmarkType.leftShoulder,
+            PoseLandmarkType.leftElbow,
+            PoseLandmarkType.leftWrist,
+          );
+          side(
+            PoseLandmarkType.rightShoulder,
+            PoseLandmarkType.rightElbow,
+            PoseLandmarkType.rightWrist,
+          );
           if (bent.isNotEmpty) {
-            out.add(FormIssue(
-              code: FormIssueCode.armBent,
-              message: 'Keep your arm straight.',
-              landmarks: bent,
-              anchor: bent.first,
-            ));
+            out.add(
+              FormIssue(
+                code: FormIssueCode.armBent,
+                message: 'Keep your arm straight.',
+                landmarks: bent,
+                anchor: bent.first,
+              ),
+            );
           }
         }
         break;

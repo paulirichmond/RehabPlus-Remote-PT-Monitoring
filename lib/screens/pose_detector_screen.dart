@@ -1,22 +1,27 @@
 // lib/screens/pose_detector_screen.dart
 //
-// SINGLE-FILE BUILD: PosePainter now lives at the bottom of this file, so you
-// can DELETE lib/widgets/pose_painter.dart (this screen was its only user).
+// SINGLE-FILE BUILD. Replace lib/screens/pose_detector_screen.dart with this.
+// No other file needs to change (form_checker.dart, exercise_model.dart and
+// pubspec.yaml stay as they are).
 //
-// What changed vs. the previous version
-//   1. Skeleton mirroring FIXED (see _initCamera + PosePainter.mirrorX).
-//   2. Added a "Flip skeleton" button in the app bar as an on-device override.
-//   3. _processFrame can no longer get stuck busy (try/finally).
-//   4. Camera init handles permission denial / failures with a retry screen.
-//   5. Camera + detector are shut down safely (stop stream -> dispose -> close)
-//      and released when the app goes to the background.
-//   6. Image size for the painter is derived from the rotation, not assumed.
-//   7. "Always red" fixes: looser form thresholds, leg checks skipped for arm
-//      exercises, a forgiving "back at rest" zone, both arms tracked, and a
-//      "Why red" line on screen that names the fault that is firing.
-//   8. Preview shows the full 4:3 frame (no crop, no stretch); the skeleton
-//      uses the same mapping. Flip _coverPreview to true for full-screen crop.
+// What changed in this version
+//   1. Per-exercise fault checks for the exercises that had none (raises,
+//      forward push, sit-to-stand, single-leg balance, wall sit), plus an
+//      un-debounced elbow-swing check for the bicep curl.
+//   2. Flailing no longer counts as a rep. A rep is rejected if it was too
+//      fast, if the arm/body faulted for several frames, or if the joint
+//      crossed the target more than once (back-and-forth).
+//   3. Looser "down" position: a nearly straight arm (elbow ~170 deg) counts
+//      as down for the curl, and the raise exercises accept the arm within
+//      ~48 deg of the body. Elbow-swing limit relaxed to 55 deg.
+//   4. Success sound is preloaded once in low-latency mode, the vibrator check
+//      is cached, and the rep is now committed on the way back down (past 60%
+//      of the return) instead of at the very end, so feedback fires sooner.
+//   5. One setState per processed frame (less rebuilding => less lag).
+//
+// Tuning knobs are all in the "TUNING" block below.
 
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -51,30 +56,109 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
   bool _initializingCamera = false;
   String? _cameraError;
 
-  final AudioPlayer _audioPlayer = AudioPlayer();
+  // ---------------------------------------------------------------------
+  // TUNING
+  // ---------------------------------------------------------------------
 
-  // pubspec registers assets/successSound.mp3.
-  void _triggerFeedback() async {
+  /// Pose analysis cap (ms between processed frames). ~15 fps.
+  static const int _minFrameIntervalMs = 66;
+
+  /// false = whole frame visible (letterboxed). true = fill and crop.
+  static const bool _coverPreview = false;
+
+  /// Same numbers as FormThresholds.standard, except the elbow-swing limit
+  /// is relaxed (was 45) so the arms don't have to be glued to your sides.
+  static const FormThresholds _thresholds = FormThresholds(
+    minLikelihood: 0.5,
+    stationaryRange: 0.40,
+    torsoSwayRange: 0.25,
+    maxWorkingSpeed: 3.5,
+    maxTrunkLeanDeg: 30,
+    maxUpperArmSwingDeg: 55,
+    minStraightArmDeg: 140,
+    window: Duration(milliseconds: 800),
+    confirm: Duration(milliseconds: 200),
+    hold: Duration(milliseconds: 700),
+    attemptProgress: 0.4,
+  );
+
+  /// Rest zone: a rep is "back at rest" once the joint has returned through
+  /// this fraction of the range.
+  static const double _restZone = 0.3;
+
+  /// The rep is judged (counted/rejected, sound plays) as soon as the joint
+  /// has come back this far toward rest after reaching the target
+  /// (1.0 = at target, 0.0 = at rest). Higher = earlier feedback.
+  static const double _commitProgress = 0.6;
+
+  /// "Down" positions. The curl's elbow is ~170 deg when the arm hangs
+  /// straight; the raises measure the arm against the body (hip-shoulder-wrist).
+  static const double _curlRestAngle = 170.0;
+  static const double _raiseRestAngle = 30.0;
+
+  /// Anti-flail rules for rep-based exercises.
+  static const int _minRepMs = 700; // leave-rest -> back toward rest
+  static const int _faultFrameLimit = 3; // faulty frames allowed in one rep
+  static const double _reArmProgress = 0.7; // must drop below this to re-hit target
+
+  /// Extra per-exercise limits.
+  static const double _raiseMaxDeg = 125.0; // arm above this = too high
+  static const double _sitToStandMaxLeanDeg = 60.0;
+  static const double _wallSitFaultDeg = 30.0; // off-target by this = red
+  static const double _wallSitTolerance = 20.0; // counts as "in position"
+
+  // ---------------------------------------------------------------------
+  // Audio / haptics
+  // ---------------------------------------------------------------------
+
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  bool _audioReady = false;
+  bool _hasVibrator = false;
+
+  /// Loads the sound once so a rep never waits on disk/decoding.
+  Future<void> _initAudio() async {
     try {
-      await _audioPlayer.play(AssetSource('successSound.mp3'));
+      await _audioPlayer.setAudioContext(
+        AudioContextConfig(focus: AudioContextConfigFocus.mixWithOthers)
+            .build(),
+      );
+      await _audioPlayer.setPlayerMode(PlayerMode.lowLatency);
+      await _audioPlayer.setReleaseMode(ReleaseMode.stop);
+      await _audioPlayer.setSource(AssetSource('successSound.mp3'));
+      _audioReady = true;
     } catch (e) {
-      debugPrint('Audio error: $e');
+      debugPrint('Audio init error: $e');
     }
-    if (await Vibration.hasVibrator() ?? false) {
-      Vibration.vibrate(duration: 150);
-    }
+  }
+
+  void _playSuccessSound() {
+    if (!_audioReady) return;
+    // Fire and forget: never block the frame pipeline on audio.
+    unawaited(
+      _audioPlayer
+          .stop()
+          .then((_) => _audioPlayer.resume())
+          .catchError((Object e) => debugPrint('Audio error: $e')),
+    );
+  }
+
+  void _triggerFeedback() {
+    _playSuccessSound();
+    if (_hasVibrator) Vibration.vibrate(duration: 100);
   }
 
   /// Double buzz for wrong form / rejected rep (throttled so it can't spam).
   DateTime _lastBuzz = DateTime.fromMillisecondsSinceEpoch(0);
-  Future<void> _triggerWrongFeedback() async {
+  void _triggerWrongFeedback() {
     final now = DateTime.now();
     if (now.difference(_lastBuzz).inMilliseconds < 1500) return;
     _lastBuzz = now;
-    if (await Vibration.hasVibrator() ?? false) {
-      Vibration.vibrate(pattern: [0, 120, 80, 120]);
-    }
+    if (_hasVibrator) Vibration.vibrate(pattern: [0, 120, 80, 120]);
   }
+
+  // ---------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------
 
   int _repCounter = 0;
   String _stage = "down";
@@ -90,10 +174,20 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
   FormIssue? _flash;
   DateTime? _flashUntil;
 
-  // ---- Rep cycle (a rep = leave rest, reach target, come back to rest) ----
+  // Debounce for the extra per-exercise faults defined in this file.
+  final Map<FormIssueCode, int> _xFirst = {};
+  final Map<FormIssueCode, int> _xLast = {};
+  final Map<FormIssueCode, FormIssue> _xIssue = {};
+
+  // ---- Rep cycle (a rep = leave rest, reach target, come back) ----
   bool _cycleActive = false;
+  bool _awaitRest = false; // rep already judged; wait until fully at rest
   DateTime? _cycleStart;
-  FormIssue? _cycleViolation; // first form fault seen during this rep
+  FormIssue? _cycleViolation; // first debounced form fault seen during the rep
+  FormIssue? _cycleFaultIssue; // first raw (instant) fault seen during the rep
+  int _cycleFaultFrames = 0; // frames with a raw fault during the rep
+  int _targetHits = 0; // times the target was reached during the rep
+  bool _atTarget = false;
   double _maxProgress = 0.0; // furthest toward target this rep (0..1+)
   double? _baseline; // the patient's own resting angle
   int _rejectedReps = 0;
@@ -104,12 +198,11 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
   late final DateTime _sessionStart;
 
   // ---- Hold-timer state (single-leg balance, wall sit, ...) ----
-  DateTime? _holdStart; // when the current hold began
-  DateTime? _lostSince; // when the position was last lost
-  bool _holdCounted = false; // this hold already earned its point
-  double _holdElapsed = 0.0; // seconds held so far
+  DateTime? _holdStart;
+  DateTime? _lostSince;
+  bool _holdCounted = false;
+  double _holdElapsed = 0.0;
   static const Duration _holdGrace = Duration(milliseconds: 700);
-  static const double _wallSitTolerance = 20.0; // degrees either side of target
 
   // Visual Overlay states
   List<Pose> _detectedPoses = [];
@@ -117,20 +210,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
   InputImageRotation _rotation = InputImageRotation.rotation0deg;
   CameraLensDirection _lensDirection = CameraLensDirection.front;
 
-  /// Whether the skeleton is flipped horizontally to match the preview.
-  ///
-  /// WHY THIS IS TRUE FOR THE FRONT CAMERA:
-  /// ML Kit analyses the raw (unmirrored) sensor frames, so its landmark X
-  /// coordinates are in "camera's point of view" space: the patient's RIGHT
-  /// hand has a SMALL x (left side of the frame). But the `camera` plugin
-  /// shows the front-camera PREVIEW as a selfie mirror, so that same right
-  /// hand is drawn on the RIGHT side of the screen. Painting the landmarks
-  /// without flipping them puts the right-hand dots on the left of the
-  /// screen -> "I raise my right hand and the skeleton's left hand rises".
-  /// Flipping X for the front camera lines the skeleton back up.
-  ///
-  /// If a particular phone renders its front preview unmirrored, tap the
-  /// flip icon in the app bar to correct it on the spot.
+  /// Front camera preview is a selfie mirror while ML Kit data is not, so the
+  /// skeleton is flipped. The app-bar button is an on-device override.
   bool _mirrorSkeleton = true;
 
   /// Live faults plus any recent one-off event.
@@ -154,32 +235,15 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     WidgetsBinding.instance.addObserver(this);
     _sessionStart = DateTime.now();
     _checker = FormChecker(widget.selectedExercise, thresholds: _thresholds);
+    Vibration.hasVibrator().then((v) => _hasVibrator = v ?? false);
+    _initAudio();
     _initPoseDetector();
     _initCamera();
   }
 
-  /// Pose analysis is capped to roughly this rate (ms between processed
-  /// frames). ~15 fps is plenty for slow rehab movements.
-  static const int _minFrameIntervalMs = 66;
-
-  /// false = show the whole camera frame at its native ratio (letterboxed,
-  /// nothing cropped, nothing stretched). true = fill the screen and crop.
-  static const bool _coverPreview = false;
-
-  /// The "strict" preset flagged normal movement as bad form (jittery
-  /// landmarks at 320x240 easily exceed 0.25 torso lengths). "standard" is
-  /// the forgiving preset that already ships in form_checker.dart, so no
-  /// custom constructor call is needed (that call was what showed red).
-  static const FormThresholds _thresholds = FormThresholds.standard;
-
-  /// A rep is "back at rest" once the joint has returned through the first
-  /// 30% of the range, instead of having to hit the exact rest angle.
-  static const double _restZone = 0.3;
-
   void _initPoseDetector() {
     // "base" is the lightweight model: same 33 landmarks as "accurate" at a
-    // fraction of the cost. Switch to PoseDetectionModel.accurate if you need
-    // more precision and the device can keep up.
+    // fraction of the cost.
     final options = PoseDetectorOptions(
       mode: PoseDetectionMode.stream,
       model: PoseDetectionModel.base,
@@ -203,14 +267,10 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
         orElse: () => _availableCameras.first,
       );
       _lensDirection = camera.lensDirection;
-
-      // Front camera preview = selfie mirror, ML Kit input = unmirrored, so
-      // the skeleton has to be flipped. Back camera: both unmirrored.
       _mirrorSkeleton = _lensDirection == CameraLensDirection.front;
 
       final controller = CameraController(
         camera,
-        // Low resolution: ML Kit downscales internally anyway.
         ResolutionPreset.low,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.nv21,
@@ -253,8 +313,6 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     }
   }
 
-  /// Stops the stream before disposing (disposing a streaming controller can
-  /// throw or keep delivering frames to a dead screen).
   Future<void> _disposeCamera() async {
     final controller = _cameraController;
     _cameraController = null;
@@ -273,6 +331,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     }
   }
 
+  void _resetTracking() {
+    _checker.reset();
+    _xFirst.clear();
+    _xLast.clear();
+    _xIssue.clear();
+    _cancelCycle();
+  }
+
   Future<void> _switchCamera() async {
     if (_availableCameras.length < 2 || _initializingCamera) return;
 
@@ -282,8 +348,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
 
     await _disposeCamera();
 
-    _checker.reset();
-    _cancelCycle();
+    _resetTracking();
     if (mounted) setState(() => _detectedPoses = []);
     await _initCamera();
   }
@@ -293,9 +358,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     if (_isSessionComplete) return;
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
-      // Release the camera while backgrounded (privacy + battery).
-      _checker.reset();
-      _cancelCycle();
+      _resetTracking();
       _disposeCamera().then((_) {
         if (mounted) setState(() => _detectedPoses = []);
       });
@@ -305,7 +368,6 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     }
   }
 
-  /// Timestamp of the last processed frame — used to cap the analysis rate.
   int _lastFrameMs = 0;
 
   void _processFrame(CameraImage image, CameraDescription camera) async {
@@ -322,47 +384,45 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       if (inputImage == null) return;
 
       final List<Pose> poses = await _poseDetector.processImage(inputImage);
+      if (!mounted || _isSessionComplete) return;
 
-      if (mounted && !_isSessionComplete) {
-        // Judge the form first so the overlay and the rep logic agree.
-        final form = _filterForm(
-          poses.isEmpty
-              ? _checker.evaluateNoPose()
-              : _checker.evaluate(poses.first.landmarks),
-        );
-
-        final rotation =
-            inputImage.metadata?.rotation ?? InputImageRotation.rotation0deg;
-        // The painter wants the frame size AFTER rotation to upright.
-        final swap =
-            rotation == InputImageRotation.rotation90deg ||
-            rotation == InputImageRotation.rotation270deg;
-        final w = image.width.toDouble();
-        final h = image.height.toDouble();
-
-        setState(() {
-          _detectedPoses = poses;
-          _imageSize = swap ? Size(h, w) : Size(w, h);
-          _rotation = rotation;
-          _form = form;
-        });
-
-        if (form.isWrong && !_wasWrong) _triggerWrongFeedback();
-        _wasWrong = form.isWrong;
-
-        if (poses.isNotEmpty) {
-          _analyzeMotion(poses.first.landmarks, form);
-        } else {
-          // Nobody in frame: drop any half-finished rep, and let the hold
-          // timer reset after its grace period.
-          _cancelCycle();
-          if (widget.selectedExercise.isHold) _updateHold(false);
-        }
+      // Judge the form first so the overlay and the rep logic agree.
+      final FormResult form;
+      if (poses.isEmpty) {
+        form = _filterForm(_checker.evaluateNoPose());
+      } else {
+        final lm = poses.first.landmarks;
+        form = _filterForm(_mergeExtraFaults(_checker.evaluate(lm), lm));
       }
+
+      if (form.isWrong && !_wasWrong) _triggerWrongFeedback();
+      _wasWrong = form.isWrong;
+
+      // Run all logic BEFORE the single setState below.
+      if (poses.isNotEmpty) {
+        _analyzeMotion(poses.first.landmarks, form);
+      } else {
+        _cancelCycle();
+        if (widget.selectedExercise.isHold) _updateHold(false);
+      }
+
+      final rotation =
+          inputImage.metadata?.rotation ?? InputImageRotation.rotation0deg;
+      final swap = rotation == InputImageRotation.rotation90deg ||
+          rotation == InputImageRotation.rotation270deg;
+      final w = image.width.toDouble();
+      final h = image.height.toDouble();
+
+      if (!mounted) return;
+      setState(() {
+        _detectedPoses = poses;
+        _imageSize = swap ? Size(h, w) : Size(w, h);
+        _rotation = rotation;
+        _form = form;
+      });
     } catch (e) {
       debugPrint("ML Kit Detection Error: $e");
     } finally {
-      // Always released, even if something above throws.
       _isProcessing = false;
     }
   }
@@ -375,21 +435,22 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       ExerciseType.forwardRaise ||
       ExerciseType.sideRaise ||
       ExerciseType.forwardPush ||
-      ExerciseType.bicepCurl => true,
+      ExerciseType.bicepCurl =>
+        true,
       _ => false,
     };
     if (!armExercise) return f;
-    final kept = f.issues
-        .where((i) => i.code != FormIssueCode.legsMoving)
-        .toList();
-    return kept.isEmpty
-        ? FormResult.ok
-        : FormResult(FormStatus.wrongForm, kept);
+    final kept =
+        f.issues.where((i) => i.code != FormIssueCode.legsMoving).toList();
+    return kept.isEmpty ? FormResult.ok : FormResult(FormStatus.wrongForm, kept);
   }
 
   // ---------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------
+
+  bool _vis(PoseLandmark? p) =>
+      p != null && p.likelihood >= _thresholds.minLikelihood;
 
   /// Angle at landmark [b] between [a] and [c], or null if any is missing.
   double? _jointAngle(
@@ -405,6 +466,21 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     return _calculateAngle(p1, p2, p3);
   }
 
+  /// Like [_jointAngle] but also requires every landmark to be confidently
+  /// visible (used by the fault checks so guessed points don't cause red).
+  double? _visAngle(
+    Map<PoseLandmarkType, PoseLandmark> lm,
+    PoseLandmarkType a,
+    PoseLandmarkType b,
+    PoseLandmarkType c,
+  ) {
+    final p1 = lm[a];
+    final p2 = lm[b];
+    final p3 = lm[c];
+    if (!_vis(p1) || !_vis(p2) || !_vis(p3)) return null;
+    return _calculateAngle(p1!, p2!, p3!);
+  }
+
   double _average(List<double> values) =>
       values.reduce((a, b) => a + b) / values.length;
 
@@ -412,6 +488,291 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     final dx = a.x - b.x;
     final dy = a.y - b.y;
     return sqrt(dx * dx + dy * dy);
+  }
+
+  /// Shoulder-mid to hip-mid distance in pixels, or null if not visible.
+  double? _torsoPx(Map<PoseLandmarkType, PoseLandmark> lm) {
+    final s = [lm[PoseLandmarkType.leftShoulder], lm[PoseLandmarkType.rightShoulder]]
+        .where(_vis)
+        .cast<PoseLandmark>()
+        .toList();
+    final h = [lm[PoseLandmarkType.leftHip], lm[PoseLandmarkType.rightHip]]
+        .where(_vis)
+        .cast<PoseLandmark>()
+        .toList();
+    if (s.isEmpty || h.isEmpty) return null;
+    final sx = s.map((p) => p.x).reduce((a, b) => a + b) / s.length;
+    final sy = s.map((p) => p.y).reduce((a, b) => a + b) / s.length;
+    final hx = h.map((p) => p.x).reduce((a, b) => a + b) / h.length;
+    final hy = h.map((p) => p.y).reduce((a, b) => a + b) / h.length;
+    return sqrt((sx - hx) * (sx - hx) + (sy - hy) * (sy - hy));
+  }
+
+  /// The angle the "down" position is judged against (see TUNING).
+  double get _restAngle {
+    switch (widget.selectedExercise.type) {
+      case ExerciseType.bicepCurl:
+        return _curlRestAngle;
+      case ExerciseType.forwardRaise:
+      case ExerciseType.sideRaise:
+        return _raiseRestAngle;
+      default:
+        return widget.selectedExercise.restAngle;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Extra per-exercise faults (live in this file; reuse existing issue codes)
+  //
+  // _rawFaults  : instantaneous, used for rep validation (catches flailing)
+  // _mergeExtraFaults : debounced, used for the red skeleton / banner
+  // ---------------------------------------------------------------------
+
+  List<FormIssue> _rawFaults(Map<PoseLandmarkType, PoseLandmark> lm) {
+    final out = <FormIssue>[];
+    final exercise = widget.selectedExercise;
+
+    switch (exercise.type) {
+      case ExerciseType.bicepCurl:
+        {
+          // Upper arm must stay beside the trunk; only the elbow bends.
+          final swung = <PoseLandmarkType>{};
+          const sides = [
+            (
+              PoseLandmarkType.leftHip,
+              PoseLandmarkType.leftShoulder,
+              PoseLandmarkType.leftElbow,
+            ),
+            (
+              PoseLandmarkType.rightHip,
+              PoseLandmarkType.rightShoulder,
+              PoseLandmarkType.rightElbow,
+            ),
+          ];
+          for (final s in sides) {
+            final a = _visAngle(lm, s.$1, s.$2, s.$3);
+            if (a != null && a > _thresholds.maxUpperArmSwingDeg) {
+              swung.add(s.$3);
+            }
+          }
+          if (swung.isNotEmpty) {
+            out.add(FormIssue(
+              code: FormIssueCode.elbowDrift,
+              message: 'Keep your elbows by your sides. Only bend the elbow.',
+              landmarks: swung,
+              anchor: swung.first,
+            ));
+          }
+        }
+        break;
+
+      case ExerciseType.forwardRaise:
+      case ExerciseType.sideRaise:
+        {
+          // Raise to shoulder height, not above it.
+          final high = <PoseLandmarkType>{};
+          const sides = [
+            (
+              PoseLandmarkType.leftHip,
+              PoseLandmarkType.leftShoulder,
+              PoseLandmarkType.leftWrist,
+            ),
+            (
+              PoseLandmarkType.rightHip,
+              PoseLandmarkType.rightShoulder,
+              PoseLandmarkType.rightWrist,
+            ),
+          ];
+          for (final s in sides) {
+            final a = _visAngle(lm, s.$1, s.$2, s.$3);
+            if (a != null && a > _raiseMaxDeg) high.add(s.$3);
+          }
+          if (high.isNotEmpty) {
+            out.add(FormIssue(
+              code: FormIssueCode.shortRange,
+              message: 'Too high. Stop at shoulder height.',
+              landmarks: high,
+              anchor: high.first,
+            ));
+          }
+        }
+        break;
+
+      case ExerciseType.forwardPush:
+        {
+          // Extended hands should be at chest height, not drifting up/down.
+          final torso = _torsoPx(lm);
+          if (torso != null) {
+            final off = <PoseLandmarkType>{};
+            const sides = [
+              (
+                PoseLandmarkType.leftShoulder,
+                PoseLandmarkType.leftElbow,
+                PoseLandmarkType.leftWrist,
+              ),
+              (
+                PoseLandmarkType.rightShoulder,
+                PoseLandmarkType.rightElbow,
+                PoseLandmarkType.rightWrist,
+              ),
+            ];
+            for (final s in sides) {
+              final elbowAngle = _visAngle(lm, s.$1, s.$2, s.$3);
+              final sh = lm[s.$1];
+              final wr = lm[s.$3];
+              if (elbowAngle == null || !_vis(sh) || !_vis(wr)) continue;
+              if (elbowAngle > 130 && (wr!.y - sh!.y).abs() > 0.6 * torso) {
+                off.add(s.$3);
+              }
+            }
+            if (off.isNotEmpty) {
+              out.add(FormIssue(
+                code: FormIssueCode.shortRange,
+                message: 'Push straight ahead at chest height.',
+                landmarks: off,
+                anchor: off.first,
+              ));
+            }
+          }
+        }
+        break;
+
+      case ExerciseType.sitToStand:
+        {
+          // Some forward lean is normal; too much means collapsing forward.
+          final ls = lm[PoseLandmarkType.leftShoulder];
+          final rs = lm[PoseLandmarkType.rightShoulder];
+          final lh = lm[PoseLandmarkType.leftHip];
+          final rh = lm[PoseLandmarkType.rightHip];
+          final shoulders = [ls, rs].where(_vis).cast<PoseLandmark>().toList();
+          final hips = [lh, rh].where(_vis).cast<PoseLandmark>().toList();
+          if (shoulders.isNotEmpty && hips.isNotEmpty) {
+            final sx = shoulders.map((p) => p.x).reduce((a, b) => a + b) /
+                shoulders.length;
+            final sy = shoulders.map((p) => p.y).reduce((a, b) => a + b) /
+                shoulders.length;
+            final hx =
+                hips.map((p) => p.x).reduce((a, b) => a + b) / hips.length;
+            final hy =
+                hips.map((p) => p.y).reduce((a, b) => a + b) / hips.length;
+            final lean = atan2((sx - hx).abs(), hy - sy) * 180 / pi;
+            if (lean > _sitToStandMaxLeanDeg) {
+              out.add(FormIssue(
+                code: FormIssueCode.trunkLean,
+                message: "Don't lean too far forward. Keep your chest up.",
+                landmarks: {
+                  PoseLandmarkType.leftShoulder,
+                  PoseLandmarkType.rightShoulder,
+                  PoseLandmarkType.leftHip,
+                  PoseLandmarkType.rightHip,
+                },
+                anchor: _vis(ls)
+                    ? PoseLandmarkType.leftShoulder
+                    : PoseLandmarkType.rightShoulder,
+              ));
+            }
+          }
+        }
+        break;
+
+      case ExerciseType.singleLegBalance:
+        {
+          final lAnkle = lm[PoseLandmarkType.leftAnkle];
+          final rAnkle = lm[PoseLandmarkType.rightAnkle];
+          if (_vis(lAnkle) && _vis(rAnkle)) {
+            // Image y grows downward: the standing foot has the larger y.
+            final leftStands = lAnkle!.y > rAnkle!.y;
+            final hip = leftStands
+                ? PoseLandmarkType.leftHip
+                : PoseLandmarkType.rightHip;
+            final knee = leftStands
+                ? PoseLandmarkType.leftKnee
+                : PoseLandmarkType.rightKnee;
+            final ankle = leftStands
+                ? PoseLandmarkType.leftAnkle
+                : PoseLandmarkType.rightAnkle;
+            final a = _visAngle(lm, hip, knee, ankle);
+            if (a != null && a < 150) {
+              out.add(FormIssue(
+                code: FormIssueCode.kneeBent,
+                message: 'Keep your standing leg straight.',
+                landmarks: {knee, ankle},
+                anchor: knee,
+              ));
+            }
+          }
+        }
+        break;
+
+      case ExerciseType.wallSit:
+        {
+          final angles = <double?>[
+            _visAngle(lm, PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee,
+                PoseLandmarkType.leftAnkle),
+            _visAngle(lm, PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee,
+                PoseLandmarkType.rightAnkle),
+          ].whereType<double>().toList();
+          if (angles.isNotEmpty) {
+            final knee = _average(angles);
+            final diff = knee - exercise.targetAngle;
+            if (diff.abs() > _wallSitFaultDeg) {
+              out.add(FormIssue(
+                code: FormIssueCode.shortRange,
+                message: diff > 0
+                    ? 'Slide lower until your knees are at 90°.'
+                    : 'Too low. Rise until your knees are at 90°.',
+                landmarks: {
+                  PoseLandmarkType.leftKnee,
+                  PoseLandmarkType.rightKnee,
+                },
+                anchor: PoseLandmarkType.leftKnee,
+              ));
+            }
+          }
+        }
+        break;
+
+      default:
+        break;
+    }
+    return out;
+  }
+
+  /// Debounces [_rawFaults] (confirm 150 ms, hold 700 ms) and merges the
+  /// result into the checker's own result.
+  FormResult _mergeExtraFaults(
+    FormResult base,
+    Map<PoseLandmarkType, PoseLandmark> lm,
+  ) {
+    if (base.isNotInFrame) return base;
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final i in _rawFaults(lm)) {
+      final last = _xLast[i.code];
+      if (last == null || now - last > 300) _xFirst[i.code] = now;
+      _xLast[i.code] = now;
+      _xIssue[i.code] = i;
+    }
+
+    final baseCodes = base.issues.map((i) => i.code).toSet();
+    final extra = <FormIssue>[];
+    for (final code in _xLast.keys.toList()) {
+      final last = _xLast[code]!;
+      if (now - last > 700) {
+        _xLast.remove(code);
+        _xFirst.remove(code);
+        _xIssue.remove(code);
+        continue;
+      }
+      if (last - _xFirst[code]! >= 150 && !baseCodes.contains(code)) {
+        extra.add(_xIssue[code]!);
+      }
+    }
+    if (extra.isEmpty) return base;
+
+    final all = [...base.issues, ...extra]
+      ..sort((a, b) => a.code.index.compareTo(b.code.index));
+    return FormResult(FormStatus.wrongForm, all);
   }
 
   // ---------------------------------------------------------------------
@@ -437,25 +798,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       return;
     }
 
-    // Extract key landmarks (left side first, right side as fallback)
-    final shoulder =
-        landmarks[PoseLandmarkType.leftShoulder] ??
+    final shoulder = landmarks[PoseLandmarkType.leftShoulder] ??
         landmarks[PoseLandmarkType.rightShoulder];
-    final hip =
-        landmarks[PoseLandmarkType.leftHip] ??
+    final hip = landmarks[PoseLandmarkType.leftHip] ??
         landmarks[PoseLandmarkType.rightHip];
-    final knee =
-        landmarks[PoseLandmarkType.leftKnee] ??
+    final knee = landmarks[PoseLandmarkType.leftKnee] ??
         landmarks[PoseLandmarkType.rightKnee];
-    final ankle =
-        landmarks[PoseLandmarkType.leftAnkle] ??
+    final ankle = landmarks[PoseLandmarkType.leftAnkle] ??
         landmarks[PoseLandmarkType.rightAnkle];
-    final elbow =
-        landmarks[PoseLandmarkType.leftElbow] ??
-        landmarks[PoseLandmarkType.rightElbow];
-    final wrist =
-        landmarks[PoseLandmarkType.leftWrist] ??
-        landmarks[PoseLandmarkType.rightWrist];
 
     double calculatedAngle = 0.0;
     bool isValidRep = false;
@@ -464,7 +814,6 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     switch (exercise.type) {
       case ExerciseType.kneeExtension:
         {
-          // One leg straightens while the other stays bent.
           final left = _jointAngle(
             landmarks,
             PoseLandmarkType.leftHip,
@@ -512,7 +861,6 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       case ExerciseType.forwardRaise:
       case ExerciseType.sideRaise:
         {
-          // Use whichever arm is raised (the old code only watched the left).
           final raised = <double?>[
             _jointAngle(
               landmarks,
@@ -530,7 +878,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
           if (raised.isNotEmpty) {
             calculatedAngle = raised.reduce(max);
             isValidRep = calculatedAngle >= exercise.targetAngle;
-            isRestPosition = calculatedAngle <= exercise.restAngle;
+            isRestPosition = calculatedAngle <= _restAngle;
           }
         }
         break;
@@ -561,8 +909,6 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
 
       case ExerciseType.bicepCurl:
         {
-          // Track BOTH arms independently; a real curl needs the wrist to
-          // travel toward the shoulder while the elbow stays pinned low.
           final left = _jointAngle(
             landmarks,
             PoseLandmarkType.leftShoulder,
@@ -595,34 +941,27 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
           if (best != null && bestElbow != null && bestWrist != null) {
             calculatedAngle = best;
 
-            // Elbow must hang below the shoulder line (image y grows down).
-            final shoulderY =
-                landmarks[PoseLandmarkType.leftShoulder]?.y ??
+            final shoulderY = landmarks[PoseLandmarkType.leftShoulder]?.y ??
                 landmarks[PoseLandmarkType.rightShoulder]?.y;
-            // Landmark coordinates are PIXELS, so tolerances must scale with
-            // the body (the old +/-0.05 / 0.12 were fractions of a pixel).
+            // Landmark coordinates are PIXELS, so tolerances scale with body.
             final torsoPx = (shoulder != null && hip != null)
                 ? _distance(shoulder, hip)
                 : 100.0;
             final elbowPinned =
                 shoulderY == null || bestElbow.y > shoulderY - 0.15 * torsoPx;
-
-            // Wrist must be near shoulder height — the top of a curl.
             final wristNearShoulder =
                 shoulderY != null && bestWrist.y <= shoulderY + 0.35 * torsoPx;
 
-            isValidRep =
-                calculatedAngle <= exercise.targetAngle &&
+            isValidRep = calculatedAngle <= exercise.targetAngle &&
                 elbowPinned &&
                 wristNearShoulder;
-            isRestPosition = calculatedAngle >= exercise.restAngle;
+            isRestPosition = calculatedAngle >= _restAngle;
           }
         }
         break;
 
       case ExerciseType.sitToStand:
         {
-          // Average knee angle of both legs: bent when seated, straight standing.
           final angles = <double?>[
             _jointAngle(
               landmarks,
@@ -648,7 +987,6 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
 
       case ExerciseType.gluteBridge:
         {
-          // Hip angle (shoulder-hip-knee): opens up as the hips lift.
           final angles = <double?>[
             _jointAngle(
               landmarks,
@@ -678,29 +1016,27 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     }
 
     // Forgiving rest zone: count the rep once the joint is back through the
-    // first part of the range, rather than at the exact rest angle (arms
-    // that hang a bit away from the body never hit 20 degrees).
+    // first part of the range, rather than at the exact rest angle.
     if (calculatedAngle != 0.0) {
-      final span = exercise.targetAngle - exercise.restAngle;
-      final returnAngle = exercise.restAngle + span * _restZone;
-      isRestPosition = span >= 0
-          ? calculatedAngle <= returnAngle
-          : calculatedAngle >= returnAngle;
+      final restA = _restAngle;
+      final span = exercise.targetAngle - restA;
+      final returnAngle = restA + span * _restZone;
+      isRestPosition =
+          span >= 0 ? calculatedAngle <= returnAngle : calculatedAngle >= returnAngle;
     }
 
-    // 0.0 means "couldn't measure" (a needed landmark was missing). Don't let
-    // that look like the patient leaving the rest position.
+    // 0.0 means "couldn't measure" (a needed landmark was missing).
     if (calculatedAngle == 0.0) return;
 
-    setState(() {
-      _currentAngle = calculatedAngle;
-      _advanceRepCycle(
-        angle: calculatedAngle,
-        isValidRep: isValidRep,
-        isRest: isRestPosition,
-        form: form,
-      );
-    });
+    // No setState here: _processFrame does a single setState per frame.
+    _currentAngle = calculatedAngle;
+    _advanceRepCycle(
+      angle: calculatedAngle,
+      isValidRep: isValidRep,
+      isRest: isRestPosition,
+      form: form,
+      instantFaults: _rawFaults(landmarks),
+    );
 
     _checkCompletion();
   }
@@ -708,10 +1044,13 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
   // ---------------------------------------------------------------------
   // Strict rep accounting
   //
-  // A rep only counts if the patient (1) leaves rest, (2) reaches the target
-  // angle, (3) returns to rest, AND (4) the form checker raised no fault at
-  // any point in between. Anything else is rejected and recorded as a 0.0
-  // compliance score, so history/therapist stats reflect real quality.
+  // A rep counts only if the patient (1) leaves rest, (2) reaches the target
+  // once, (3) comes back toward rest, AND (4) took long enough, AND (5) no
+  // fault was raised along the way (debounced OR instantaneous for more than
+  // a couple of frames). Anything else is rejected and scored 0.0.
+  //
+  // The rep is judged as soon as the joint is _commitProgress of the way
+  // back, so the sound/vibration don't wait for a full return to rest.
   // ---------------------------------------------------------------------
 
   void _advanceRepCycle({
@@ -719,12 +1058,22 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     required bool isValidRep,
     required bool isRest,
     required FormResult form,
+    required List<FormIssue> instantFaults,
   }) {
+    // Rep already judged: wait for a full return before the next one starts.
+    if (_awaitRest) {
+      if (isRest) {
+        _awaitRest = false;
+        _cancelCycle();
+        _learnBaseline(angle);
+      }
+      return;
+    }
+
     if (isRest) {
       if (_cycleActive) _finishCycle();
       _cancelCycle();
-      // Learn the patient's own resting angle (used to judge partial reps).
-      _baseline = _baseline == null ? angle : _baseline! * 0.8 + angle * 0.2;
+      _learnBaseline(angle);
       return;
     }
 
@@ -732,15 +1081,43 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       _cycleActive = true;
       _cycleStart = DateTime.now();
       _cycleViolation = null;
+      _cycleFaultIssue = null;
+      _cycleFaultFrames = 0;
+      _targetHits = 0;
+      _atTarget = false;
       _maxProgress = 0.0;
     }
 
     if (form.isWrong) _cycleViolation ??= form.primary;
-    _maxProgress = max(_maxProgress, _progress(angle));
-
-    if (isValidRep && _stage == "down") {
-      _stage = "up"; // target reached; the rep is judged on the way back
+    if (instantFaults.isNotEmpty) {
+      _cycleFaultFrames++;
+      _cycleFaultIssue ??= instantFaults.first;
     }
+
+    final p = _progress(angle);
+    _maxProgress = max(_maxProgress, p);
+
+    // Count how many separate times the target was reached (hysteresis so
+    // jitter around the target isn't counted as a new hit).
+    if (isValidRep) {
+      if (!_atTarget) {
+        _atTarget = true;
+        _targetHits++;
+      }
+      if (_stage == "down") _stage = "up";
+    } else if (p < _reArmProgress) {
+      _atTarget = false;
+    }
+
+    // Judge the rep on the way back, without waiting for full rest.
+    if (_stage == "up" && p <= _commitProgress) {
+      _finishCycle();
+      _awaitRest = true;
+    }
+  }
+
+  void _learnBaseline(double angle) {
+    _baseline = _baseline == null ? angle : _baseline! * 0.8 + angle * 0.2;
   }
 
   void _finishCycle() {
@@ -750,13 +1127,27 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
         .inMilliseconds;
 
     if (_stage == "up") {
-      final bad = _cycleViolation;
-      if (bad == null) {
+      final bad = _cycleViolation ??
+          (_cycleFaultFrames >= _faultFrameLimit ? _cycleFaultIssue : null);
+
+      if (bad != null) {
+        _rejectRep(bad.withMessage('Rep not counted. ${bad.message}'));
+      } else if (_targetHits > 1) {
+        _rejectRep(const FormIssue(
+          code: FormIssueCode.tooFast,
+          message: 'Rep not counted. Use one smooth movement, not back and forth.',
+          landmarks: <PoseLandmarkType>{},
+        ));
+      } else if (ms < _minRepMs) {
+        _rejectRep(const FormIssue(
+          code: FormIssueCode.tooFast,
+          message: 'Rep not counted. Too fast. Slow down and control it.',
+          landmarks: <PoseLandmarkType>{},
+        ));
+      } else {
         _repCounter++;
         _repScores.add(1.0);
         _triggerFeedback();
-      } else {
-        _rejectRep(bad.withMessage('Rep not counted. ${bad.message}'));
       }
     } else if (_maxProgress >= _thresholds.attemptProgress && ms >= 500) {
       // They started the movement but never got to the target angle.
@@ -780,8 +1171,13 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
 
   void _cancelCycle() {
     _cycleActive = false;
+    _awaitRest = false;
     _cycleStart = null;
     _cycleViolation = null;
+    _cycleFaultIssue = null;
+    _cycleFaultFrames = 0;
+    _targetHits = 0;
+    _atTarget = false;
     _maxProgress = 0.0;
     _stage = "down";
   }
@@ -789,7 +1185,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
   /// 0 = at the patient's resting angle, 1 = at the target angle.
   double _progress(double angle) {
     final e = widget.selectedExercise;
-    final base = _baseline ?? e.restAngle;
+    final base = _baseline ?? _restAngle;
     final span = e.targetAngle - base;
     if (span.abs() < 10) return 0.0; // degenerate range, don't guess
     return (angle - base) / span;
@@ -860,23 +1256,17 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
               rHip != null &&
               rKnee != null &&
               rAnkle != null) {
-            // Image y grows downward, so the standing foot has the larger y.
             final leftIsStanding = lAnkle.y > rAnkle.y;
             final standHip = leftIsStanding ? lHip : rHip;
             final standKnee = leftIsStanding ? lKnee : rKnee;
             final standAnkle = leftIsStanding ? lAnkle : rAnkle;
 
-            final standingKneeAngle = _calculateAngle(
-              standHip,
-              standKnee,
-              standAnkle,
-            );
+            final standingKneeAngle =
+                _calculateAngle(standHip, standKnee, standAnkle);
             final legLength = _distance(standHip, standAnkle);
             final footLift = (lAnkle.y - rAnkle.y).abs();
 
             _currentAngle = standingKneeAngle;
-            // Standing leg mostly straight AND other foot lifted by at
-            // least 15% of the standing leg's length.
             inPosition =
                 standingKneeAngle >= 150.0 && footLift >= 0.15 * legLength;
           }
@@ -913,14 +1303,12 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
         break;
     }
 
-    // Strict: the clock only runs while the position is right AND the form
-    // checker is happy.
+    // The clock only runs while the position is right AND form is clean.
     _updateHold(inPosition && !form.isWrong);
   }
 
-  /// Call once per processed frame. Counts up while [inPosition] is true and
-  /// awards one point when the hold reaches holdSeconds. A short loss of the
-  /// position (grace period) does not reset the timer.
+  /// Call once per processed frame. State is plain fields; the frame's single
+  /// setState in _processFrame repaints them.
   void _updateHold(bool inPosition) {
     final now = DateTime.now();
     final needed = widget.selectedExercise.holdSeconds;
@@ -929,15 +1317,12 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       _lostSince = null;
       _holdStart ??= now;
       final elapsed = now.difference(_holdStart!).inMilliseconds / 1000.0;
-
-      setState(() {
-        _holdElapsed = elapsed > needed ? needed.toDouble() : elapsed;
-      });
+      _holdElapsed = elapsed > needed ? needed.toDouble() : elapsed;
 
       if (elapsed >= needed && !_holdCounted) {
         _holdCounted = true;
         _repScores.add(1.0);
-        setState(() => _repCounter++);
+        _repCounter++;
         _triggerFeedback();
         _checkCompletion();
       }
@@ -945,11 +1330,9 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       _lostSince ??= now;
       if (now.difference(_lostSince!) > _holdGrace) {
         if (_holdStart != null || _holdElapsed != 0.0) {
-          setState(() {
-            _holdStart = null;
-            _holdCounted = false; // release, then hold again for the next one
-            _holdElapsed = 0.0;
-          });
+          _holdStart = null;
+          _holdCounted = false; // release, then hold again for the next one
+          _holdElapsed = 0.0;
         }
       }
     }
@@ -959,15 +1342,12 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
   // Session completion
   // ---------------------------------------------------------------------
 
-  /// Call after every place _repCounter is incremented. Once the target is
-  /// reached, locks in the session, persists it to history, and shows the
-  /// congratulations banner. Safe to call repeatedly — only fires once.
   void _checkCompletion() {
     if (_isSessionComplete) return;
     if (_repCounter < widget.selectedExercise.targetReps) return;
 
     setState(() => _isSessionComplete = true);
-    _disposeCamera(); // session is over: stop the stream and free the camera
+    _disposeCamera();
     _saveSession();
     _showCompletionBanner();
   }
@@ -984,8 +1364,6 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       completedSets: 1,
       targetReps: exercise.targetReps,
       targetSets: 1,
-      // One score per attempt: 1.0 for a clean rep/hold, 0.0 for a rep that
-      // was rejected for form or range. overallCompliance = clean / attempts.
       repComplianceScores: List<double>.from(_repScores),
       notes: _rejectedReps > 0
           ? '$_rejectedReps rep(s) rejected for poor form or range'
@@ -1039,8 +1417,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
         actions: [
           TextButton(
             onPressed: () {
-              Navigator.of(dialogContext).pop(); // close the dialog
-              if (mounted) Navigator.of(context).pop(); // back to the list
+              Navigator.of(dialogContext).pop();
+              if (mounted) Navigator.of(context).pop();
             },
             child: const Text('Done'),
           ),
@@ -1062,11 +1440,9 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
     CameraDescription camera,
   ) {
     final sensorOrientation = camera.sensorOrientation;
-    final rotation =
-        InputImageRotationValue.fromRawValue(sensorOrientation) ??
+    final rotation = InputImageRotationValue.fromRawValue(sensorOrientation) ??
         InputImageRotation.rotation0deg;
-    final format =
-        InputImageFormatValue.fromRawValue(image.format.raw) ??
+    final format = InputImageFormatValue.fromRawValue(image.format.raw) ??
         InputImageFormat.nv21;
 
     final WriteBuffer allBytes = WriteBuffer();
@@ -1162,25 +1538,28 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // Native-ratio preview (see _coverPreview). The plugin itself mirrors
-          // the FRONT preview like a selfie; this widget adds no flip.
           const ColoredBox(color: Colors.black),
-          _AspectCoverPreview(controller: controller, cover: _coverPreview),
+          RepaintBoundary(
+            child: _AspectCoverPreview(
+              controller: controller,
+              cover: _coverPreview,
+            ),
+          ),
 
           if (_imageSize != null && _detectedPoses.isNotEmpty)
-            CustomPaint(
-              painter: PosePainter(
-                _detectedPoses,
-                _imageSize!,
-                _rotation,
-                isCorrect,
-                _lensDirection,
-                // Front camera: preview is mirrored, ML Kit data is not, so
-                // the skeleton is flipped to match (see _mirrorSkeleton).
-                mirrorX: _mirrorSkeleton,
-                cover: _coverPreview,
-                flaggedLandmarks: form.flagged,
-                issues: form.issues,
+            RepaintBoundary(
+              child: CustomPaint(
+                painter: PosePainter(
+                  _detectedPoses,
+                  _imageSize!,
+                  _rotation,
+                  isCorrect,
+                  _lensDirection,
+                  mirrorX: _mirrorSkeleton,
+                  cover: _coverPreview,
+                  flaggedLandmarks: form.flagged,
+                  issues: form.issues,
+                ),
               ),
             ),
 
@@ -1206,7 +1585,6 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Progress bar for timed holds
                   if (exercise.isHold) ...[
                     ClipRRect(
                       borderRadius: BorderRadius.circular(6),
@@ -1305,14 +1683,10 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
 }
 
 /// Camera preview drawn at the sensor's native aspect ratio.
-///  - cover=false: the whole frame is visible (letterboxed), so nothing is
-///    cropped or stretched.
+///  - cover=false: the whole frame is visible (letterboxed).
 ///  - cover=true : the frame fills the screen and the overflow is cropped.
 /// PosePainter uses the identical mapping, so video and skeleton line up.
-///
-/// This widget must NOT apply its own horizontal flip: the `camera` plugin
-/// already mirrors the front preview, and PosePainter.mirrorX compensates
-/// for that on the skeleton side.
+/// This widget must NOT apply its own horizontal flip.
 class _AspectCoverPreview extends StatelessWidget {
   final CameraController controller;
   final bool cover;
@@ -1326,16 +1700,12 @@ class _AspectCoverPreview extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    // Plugins disagree on whether previewSize is landscape or portrait, so
-    // don't trust its orientation: take the long/short sides and orient the
-    // frame to match the screen (portrait phone => tall frame).
     final longSide = max(size.width, size.height);
     final shortSide = min(size.width, size.height);
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
-    final frame = isLandscape
-        ? Size(longSide, shortSide)
-        : Size(shortSide, longSide);
+    final frame =
+        isLandscape ? Size(longSide, shortSide) : Size(shortSide, longSide);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1405,32 +1775,26 @@ class _FormBanner extends StatelessWidget {
 }
 
 // ===========================================================================
-// PosePainter (merged in from lib/widgets/pose_painter.dart)
+// PosePainter (lives here; lib/widgets/pose_painter.dart is not needed)
 // ===========================================================================
 
 class PosePainter extends CustomPainter {
   final List<Pose> poses;
 
   /// Size of the analysis frame in PIXELS, already rotated to display
-  /// orientation (portrait phone => swapped W/H). Landmarks are mapped with
-  /// a uniform cover scale + centre-crop offset so the skeleton matches an
-  /// undistorted preview.
+  /// orientation (portrait phone => swapped W/H).
   final Size absoluteImageSize;
   final InputImageRotation rotation;
   final bool isExerciseCorrect;
   final CameraLensDirection cameraLensDirection;
 
-  /// Flip landmarks horizontally. True for the front camera: ML Kit sees the
-  /// unmirrored frame while the on-screen preview is a selfie mirror, so
-  /// without this flip the patient's right hand drives the skeleton's
-  /// left-side limb on screen.
+  /// Flip landmarks horizontally (true for the front camera).
   final bool mirrorX;
 
-  /// Same choice as the preview: false = whole frame visible (min scale),
-  /// true = fill and crop (max scale).
+  /// Same choice as the preview: false = whole frame visible, true = crop.
   final bool cover;
 
-  /// Joints the form checker wants highlighted (drawn larger with a red glow).
+  /// Joints the form checker wants highlighted.
   final Set<PoseLandmarkType> flaggedLandmarks;
 
   /// Faults to explain with a callout bubble next to the offending joint.
@@ -1448,7 +1812,6 @@ class PosePainter extends CustomPainter {
     this.issues = const [],
   });
 
-  // Facial landmarks to exclude from drawing dots
   static const Set<PoseLandmarkType> _faceLandmarks = {
     PoseLandmarkType.nose,
     PoseLandmarkType.leftEyeInner,
@@ -1487,7 +1850,6 @@ class PosePainter extends CustomPainter {
 
     final wrong = !isExerciseCorrect;
     final lineColor = wrong ? Colors.redAccent : Colors.greenAccent;
-    // Red bones with yellow joints when the form is wrong.
     final dotColor = wrong ? Colors.yellowAccent : Colors.greenAccent;
 
     final dotPaint = Paint()
@@ -1506,8 +1868,6 @@ class PosePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..color = Colors.red;
 
-    // Aspect-correct mapping: uniform cover scale + centre crop, matching
-    // _AspectCoverPreview.
     final iw = absoluteImageSize.width;
     final ih = absoluteImageSize.height;
     if (iw <= 0 || ih <= 0) return;
@@ -1526,28 +1886,21 @@ class PosePainter extends CustomPainter {
         if (landmark.likelihood > 0.5) {
           var x = offX + landmark.x * scale;
           final y = offY + landmark.y * scale;
-
-          // Mirror about the screen's vertical centre line. The preview is
-          // flipped around the same line (it is centred in the screen), so
-          // the skeleton and the video stay glued together.
           if (mirrorX) x = size.width - x;
           points[type] = Offset(x, y);
         }
       });
 
-      // Bones (thicker when they touch a flagged joint)
       for (final bone in _bones) {
         final p1 = points[bone[0]];
         final p2 = points[bone[1]];
         if (p1 == null || p2 == null) continue;
-        final hot =
-            wrong &&
+        final hot = wrong &&
             (flaggedLandmarks.contains(bone[0]) ||
                 flaggedLandmarks.contains(bone[1]));
         canvas.drawLine(p1, p2, hot ? hotLinePaint : linePaint);
       }
 
-      // Joint dots (never on the face)
       points.forEach((type, p) {
         if (!_faceLandmarks.contains(type)) {
           canvas.drawCircle(p, 5, dotPaint);
@@ -1588,7 +1941,7 @@ class PosePainter extends CustomPainter {
     return null;
   }
 
-  /// White bubble with a red border and red text, joined to the joint by a line.
+  /// White bubble with a red border and red text, joined to the joint.
   void _drawCallouts(
     Canvas canvas,
     Size size,
@@ -1633,8 +1986,6 @@ class PosePainter extends CustomPainter {
       final w = tp.width + pad * 2;
       final h = tp.height + pad * 2;
 
-      // Bubble goes on whichever side of the joint has more room; the first
-      // one above it and the second below so two callouts never overlap.
       final onLeftHalf = target.dx < size.width / 2;
       final left = (onLeftHalf ? target.dx + 28 : target.dx - 28 - w)
           .clamp(8.0, size.width - w - 8.0)

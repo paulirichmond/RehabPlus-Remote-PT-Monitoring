@@ -150,15 +150,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
 
     // NOTE ON MIRRORING: the `camera` package has no
     // `ignoreFrontCameraOrientation` flag (that belongs to the old
-    // `camera_features` fork, which is why the line showed up red). The
-    // standard `camera` package mirrors NOTHING: on Android/CameraX both
-    // the preview texture and the frames delivered to `startImageStream`
-    // are unmirrored. So we flip the selfie preview horizontally in
-    // _AspectCoverPreview (one flip) and mirror the ML Kit landmarks by
-    // the same single amount in PosePainter (mirrorFrontCamera). Both
-    // layers flip together -> skeleton overlays the video and behaves
-    // like a mirror: raise your right hand -> skeleton's hand rises on
-    // the right side of the screen.
+    // `camera_features` fork, which is why the line showed up red). On
+    // Android the front-camera PREVIEW is shown mirrored by the platform
+    // (the familiar selfie look — confirmed on this device), while the
+    // frames delivered to `startImageStream` are UNMIRRORED sensor data.
+    // So exactly ONE horizontal flip is needed for the skeleton overlay:
+    // PosePainter's `mirrorFrontCamera`. _AspectCoverPreview must NOT flip
+    // anything — flipping there too would double-mirror the video and break
+    // the alignment.
     _cameraController = CameraController(
       camera,
       // Low resolution: ML Kit downscales internally anyway, so feeding it
@@ -166,9 +165,6 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       ResolutionPreset.low,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.nv21,
-      // The `camera` package does NOT mirror the front-camera preview (and
-      // never feeds mirrored frames to ML Kit). We therefore render the
-      // selfie view ourselves as a true mirror via _AspectCoverPreview.
     );
 
     await _cameraController!.initialize();
@@ -938,15 +934,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
           // ratio and is centre-cropped to fill the screen (BoxFit.cover),
           // instead of being stretched 4:3 -> 16:9 like before.
           //
-          // The `camera` package does NOT mirror the front preview (the
-          // CameraX-native-mirroring assumption was wrong), so
-          // _AspectCoverPreview now flips it horizontally to give the
-          // familiar selfie/mirror view. ML Kit analyses the unmirrored
-          // frames, so PosePainter mirrors the landmarks by the same
-          // amount (mirrorFrontCamera below). Both flip together, so the
-          // skeleton overlays the video exactly: raise your right hand ->
-          // the skeleton's hand rises on the RIGHT side of the screen and
-          // stays glued to your real hand.
+          // The platform already shows the front-camera preview mirrored
+          // (selfie-style), and _AspectCoverPreview deliberately adds NO
+          // extra flip. ML Kit analyses the unmirrored stream frames, so
+          // PosePainter applies the single landmark mirror below
+          // (mirrorFrontCamera) — one flip total, so the skeleton overlays
+          // the video exactly and behaves like a mirror: raise your right
+          // hand -> the skeleton's hand rises on the right side of the
+          // screen, glued to your real hand.
           _AspectCoverPreview(controller: _cameraController!),
 
           if (_imageSize != null && _detectedPoses.isNotEmpty)
@@ -1082,13 +1077,13 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
 /// coordinate space, which PosePainter maps with an identical cover + crop
 /// transform — video and skeleton therefore line up exactly.
 ///
-/// IMPORTANT: the `camera` package does NOT mirror the front-camera preview
-/// on Android/CameraX — CameraPreview renders the raw, unmirrored sensor
-/// texture (there is no controller flag to change this), while the frames
-/// delivered to `startImageStream` are also unmirrored. So for a selfie-style
-/// mirror view we flip the preview horizontally ourselves (see below), and
-/// PosePainter mirrors the landmarks by the same single amount. If only ONE
-/// of the two flips, the skeleton appears inverted relative to the video.
+/// IMPORTANT: this widget must NOT apply any horizontal flip. On Android the
+/// front-camera preview is already mirrored by the platform (the familiar
+/// selfie look), while `startImageStream` delivers unmirrored frames to ML
+/// Kit. The single compensating flip lives in PosePainter
+/// (`mirrorFrontCamera`). If this widget flipped too, the video and the
+/// skeleton would double-mirror relative to each other and the skeleton
+/// would appear inverted.
 class _AspectCoverPreview extends StatelessWidget {
   final CameraController controller;
 
@@ -1107,7 +1102,7 @@ class _AspectCoverPreview extends StatelessWidget {
         Orientation.landscape;
     final frame = isLandscape ? size : Size(size.height, size.width);
 
-    final preview = LayoutBuilder(
+    return LayoutBuilder(
       builder: (context, constraints) {
         final screen = Size(
           constraints.maxWidth,
@@ -1137,22 +1132,6 @@ class _AspectCoverPreview extends StatelessWidget {
         );
       },
     );
-
-    // The `camera` package does NOT mirror the front-camera preview — it
-    // shows the raw (unmirrored) sensor texture. For a selfie-style mirror
-    // view we flip it horizontally here. PosePainter mirrors the landmarks
-    // by the same amount, so skeleton and video always stay in sync.
-    // Back cameras are rendered as-is.
-    final isFront =
-        controller.description.lensDirection == CameraLensDirection.front;
-
-    return isFront
-        ? Transform(
-            alignment: Alignment.center,
-            transform: Matrix4.diagonal3Values(-1.0, 1.0, 1.0),
-            child: preview,
-          )
-        : preview;
   }
 }
 

@@ -1,6 +1,23 @@
 // lib/screens/pose_detector_screen.dart
+//
+// SINGLE-FILE BUILD: PosePainter now lives at the bottom of this file, so you
+// can DELETE lib/widgets/pose_painter.dart (this screen was its only user).
+//
+// What changed vs. the previous version
+//   1. Skeleton mirroring FIXED (see _initCamera + PosePainter.mirrorX).
+//   2. Added a "Flip skeleton" button in the app bar as an on-device override.
+//   3. _processFrame can no longer get stuck busy (try/finally).
+//   4. Camera init handles permission denial / failures with a retry screen.
+//   5. Camera + detector are shut down safely (stop stream -> dispose -> close)
+//      and released when the app goes to the background.
+//   6. Image size for the painter is derived from the rotation, not assumed.
+//   7. "Always red" fixes: looser form thresholds, leg checks skipped for arm
+//      exercises, a forgiving "back at rest" zone, both arms tracked, and a
+//      "Why red" line on screen that names the fault that is firing.
+//   8. Preview shows the full 4:3 frame (no crop, no stretch); the skeleton
+//      uses the same mapping. Flip _coverPreview to true for full-screen crop.
+
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -16,7 +33,6 @@ import '../models/exercise_model.dart';
 import '../models/session.dart';
 import '../services/app_provider.dart';
 import '../services/form_checker.dart';
-import '../widgets/pose_painter.dart';
 
 class PoseDetectorScreen extends StatefulWidget {
   final ExerciseConfig selectedExercise;
@@ -26,21 +42,18 @@ class PoseDetectorScreen extends StatefulWidget {
   State<PoseDetectorScreen> createState() => _PoseDetectorScreenState();
 }
 
-class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
+class _PoseDetectorScreenState extends State<PoseDetectorScreen>
+    with WidgetsBindingObserver {
   CameraController? _cameraController;
   List<CameraDescription> _availableCameras = [];
   late PoseDetector _poseDetector;
   bool _isProcessing = false;
-
-  // Don't feed ML Kit more than ~15 frames/s; extra frames only add copying
-  // and garbage-collection work.
-  static const int _minFrameGapMs = 66;
-  int _lastFrameMs = 0;
+  bool _initializingCamera = false;
+  String? _cameraError;
 
   final AudioPlayer _audioPlayer = AudioPlayer();
 
-  // pubspec registers assets/successSound.mp3 (the old code asked for
-  // chime.mp3, which isn't bundled and threw on every rep).
+  // pubspec registers assets/successSound.mp3.
   void _triggerFeedback() async {
     try {
       await _audioPlayer.play(AssetSource('successSound.mp3'));
@@ -104,6 +117,22 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
   InputImageRotation _rotation = InputImageRotation.rotation0deg;
   CameraLensDirection _lensDirection = CameraLensDirection.front;
 
+  /// Whether the skeleton is flipped horizontally to match the preview.
+  ///
+  /// WHY THIS IS TRUE FOR THE FRONT CAMERA:
+  /// ML Kit analyses the raw (unmirrored) sensor frames, so its landmark X
+  /// coordinates are in "camera's point of view" space: the patient's RIGHT
+  /// hand has a SMALL x (left side of the frame). But the `camera` plugin
+  /// shows the front-camera PREVIEW as a selfie mirror, so that same right
+  /// hand is drawn on the RIGHT side of the screen. Painting the landmarks
+  /// without flipping them puts the right-hand dots on the left of the
+  /// screen -> "I raise my right hand and the skeleton's left hand rises".
+  /// Flipping X for the front camera lines the skeleton back up.
+  ///
+  /// If a particular phone renders its front preview unmirrored, tap the
+  /// flip icon in the app bar to correct it on the spot.
+  bool _mirrorSkeleton = true;
+
   /// Live faults plus any recent one-off event.
   FormResult get _effectiveForm {
     final flash = _flash;
@@ -122,126 +151,237 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _sessionStart = DateTime.now();
-    _checker = FormChecker(widget.selectedExercise);
+    _checker = FormChecker(widget.selectedExercise, thresholds: _thresholds);
     _initPoseDetector();
     _initCamera();
   }
 
+  /// Pose analysis is capped to roughly this rate (ms between processed
+  /// frames). ~15 fps is plenty for slow rehab movements.
+  static const int _minFrameIntervalMs = 66;
+
+  /// false = show the whole camera frame at its native ratio (letterboxed,
+  /// nothing cropped, nothing stretched). true = fill the screen and crop.
+  static const bool _coverPreview = false;
+
+  /// The "strict" preset flagged normal movement as bad form (jittery
+  /// landmarks at 320x240 easily exceed 0.25 torso lengths). "standard" is
+  /// the forgiving preset that already ships in form_checker.dart, so no
+  /// custom constructor call is needed (that call was what showed red).
+  static const FormThresholds _thresholds = FormThresholds.standard;
+
+  /// A rep is "back at rest" once the joint has returned through the first
+  /// 30% of the range, instead of having to hit the exact rest angle.
+  static const double _restZone = 0.3;
+
   void _initPoseDetector() {
+    // "base" is the lightweight model: same 33 landmarks as "accurate" at a
+    // fraction of the cost. Switch to PoseDetectionModel.accurate if you need
+    // more precision and the device can keep up.
     final options = PoseDetectorOptions(
       mode: PoseDetectionMode.stream,
-      // `base` is much lighter than `accurate` and is what keeps the frame
-      // rate usable on mid-range phones. Switch back if you need the extra
-      // precision and your target devices can take it.
       model: PoseDetectionModel.base,
     );
     _poseDetector = PoseDetector(options: options);
   }
 
   Future<void> _initCamera() async {
-    _availableCameras = await availableCameras();
-    final camera = _availableCameras.firstWhere(
-      (c) => c.lensDirection == _lensDirection,
-      orElse: () => _availableCameras.first,
-    );
+    if (_initializingCamera || _isSessionComplete) return;
+    _initializingCamera = true;
+    if (mounted) setState(() => _cameraError = null);
 
-    _lensDirection = camera.lensDirection;
+    try {
+      _availableCameras = await availableCameras();
+      if (_availableCameras.isEmpty) {
+        throw CameraException('NoCamera', 'No camera found on this device.');
+      }
 
-    // NOTE ON MIRRORING: the `camera` package has no
-    // `ignoreFrontCameraOrientation` flag (that belongs to the old
-    // `camera_features` fork, which is why the line showed up red). The
-    // standard `camera` package mirrors NOTHING: on Android/CameraX both
-    // the preview texture and the frames delivered to `startImageStream`
-    // are unmirrored. So we flip the selfie preview horizontally in
-    // _AspectCoverPreview (one flip) and mirror the ML Kit landmarks by
-    // the same single amount in PosePainter (mirrorFrontCamera). Both
-    // layers flip together -> skeleton overlays the video and behaves
-    // like a mirror: raise your right hand -> skeleton's hand rises on
-    // the right side of the screen.
-    _cameraController = CameraController(
-      camera,
-      ResolutionPreset.medium,
-      enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.nv21,
-      // The `camera` package does NOT mirror the front-camera preview (and
-      // never feeds mirrored frames to ML Kit). We therefore render the
-      // selfie view ourselves as a true mirror via _AspectCoverPreview.
-    );
+      final camera = _availableCameras.firstWhere(
+        (c) => c.lensDirection == _lensDirection,
+        orElse: () => _availableCameras.first,
+      );
+      _lensDirection = camera.lensDirection;
 
-    await _cameraController!.initialize();
-    _cameraController!.startImageStream(
-      (image) => _processFrame(image, camera),
-    );
-    if (mounted) setState(() {});
+      // Front camera preview = selfie mirror, ML Kit input = unmirrored, so
+      // the skeleton has to be flipped. Back camera: both unmirrored.
+      _mirrorSkeleton = _lensDirection == CameraLensDirection.front;
+
+      final controller = CameraController(
+        camera,
+        // Low resolution: ML Kit downscales internally anyway.
+        ResolutionPreset.low,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.nv21,
+      );
+      _cameraController = controller;
+
+      await controller.initialize();
+      if (!mounted) {
+        await _disposeCamera();
+        return;
+      }
+      await controller.startImageStream(
+        (image) => _processFrame(image, camera),
+      );
+      if (mounted) setState(() {});
+    } on CameraException catch (e) {
+      debugPrint('Camera error: ${e.code} ${e.description}');
+      await _disposeCamera();
+      if (mounted) {
+        setState(() {
+          _cameraError = switch (e.code) {
+            'CameraAccessDenied' ||
+            'CameraAccessDeniedWithoutPrompt' ||
+            'CameraAccessRestricted' =>
+              'Camera permission is required to track your exercise. '
+                  'Please allow camera access in your phone settings.',
+            'NoCamera' => 'No camera was found on this device.',
+            _ => 'Could not start the camera (${e.code}).',
+          };
+        });
+      }
+    } catch (e) {
+      debugPrint('Camera init failed: $e');
+      await _disposeCamera();
+      if (mounted) {
+        setState(() => _cameraError = 'Could not start the camera.');
+      }
+    } finally {
+      _initializingCamera = false;
+    }
+  }
+
+  /// Stops the stream before disposing (disposing a streaming controller can
+  /// throw or keep delivering frames to a dead screen).
+  Future<void> _disposeCamera() async {
+    final controller = _cameraController;
+    _cameraController = null;
+    if (controller == null) return;
+    try {
+      if (controller.value.isStreamingImages) {
+        await controller.stopImageStream();
+      }
+    } catch (e) {
+      debugPrint('stopImageStream: $e');
+    }
+    try {
+      await controller.dispose();
+    } catch (e) {
+      debugPrint('camera dispose: $e');
+    }
   }
 
   Future<void> _switchCamera() async {
-    if (_availableCameras.length < 2) return;
+    if (_availableCameras.length < 2 || _initializingCamera) return;
 
     _lensDirection = _lensDirection == CameraLensDirection.front
         ? CameraLensDirection.back
         : CameraLensDirection.front;
 
-    if (_cameraController != null) {
-      await _cameraController!.stopImageStream();
-      await _cameraController!.dispose();
-      _cameraController = null;
-    }
+    await _disposeCamera();
 
     _checker.reset();
     _cancelCycle();
+    if (mounted) setState(() => _detectedPoses = []);
     await _initCamera();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_isSessionComplete) return;
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      // Release the camera while backgrounded (privacy + battery).
+      _checker.reset();
+      _cancelCycle();
+      _disposeCamera().then((_) {
+        if (mounted) setState(() => _detectedPoses = []);
+      });
+    } else if (state == AppLifecycleState.resumed &&
+        _cameraController == null) {
+      _initCamera();
+    }
+  }
+
+  /// Timestamp of the last processed frame — used to cap the analysis rate.
+  int _lastFrameMs = 0;
+
   void _processFrame(CameraImage image, CameraDescription camera) async {
+    // Back-pressure: skip frames while ML Kit is still busy.
+    if (_isProcessing || _isSessionComplete || !mounted) return;
+
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    if (_isProcessing ||
-        _isSessionComplete ||
-        nowMs - _lastFrameMs < _minFrameGapMs) {
-      return;
-    }
+    if (nowMs - _lastFrameMs < _minFrameIntervalMs) return;
     _lastFrameMs = nowMs;
+
     _isProcessing = true;
+    try {
+      final inputImage = _inputImageFromCameraImage(image, camera);
+      if (inputImage == null) return;
 
-    final inputImage = _inputImageFromCameraImage(image, camera);
-    if (inputImage != null) {
-      try {
-        final List<Pose> poses = await _poseDetector.processImage(inputImage);
+      final List<Pose> poses = await _poseDetector.processImage(inputImage);
 
-        if (mounted) {
-          // Judge the form first so the overlay and the rep logic agree.
-          final form = poses.isEmpty
+      if (mounted && !_isSessionComplete) {
+        // Judge the form first so the overlay and the rep logic agree.
+        final form = _filterForm(
+          poses.isEmpty
               ? _checker.evaluateNoPose()
-              : _checker.evaluate(poses.first.landmarks);
+              : _checker.evaluate(poses.first.landmarks),
+        );
 
+        final rotation =
+            inputImage.metadata?.rotation ?? InputImageRotation.rotation0deg;
+        // The painter wants the frame size AFTER rotation to upright.
+        final swap = rotation == InputImageRotation.rotation90deg ||
+            rotation == InputImageRotation.rotation270deg;
+        final w = image.width.toDouble();
+        final h = image.height.toDouble();
+
+        setState(() {
           _detectedPoses = poses;
-          _imageSize = Size(image.height.toDouble(), image.width.toDouble());
-          _rotation =
-              inputImage.metadata?.rotation ?? InputImageRotation.rotation0deg;
+          _imageSize = swap ? Size(h, w) : Size(w, h);
+          _rotation = rotation;
           _form = form;
+        });
 
-          if (form.isWrong && !_wasWrong) _triggerWrongFeedback();
-          _wasWrong = form.isWrong;
+        if (form.isWrong && !_wasWrong) _triggerWrongFeedback();
+        _wasWrong = form.isWrong;
 
-          if (poses.isNotEmpty) {
-            _analyzeMotion(poses.first.landmarks, form);
-          } else {
-            // Nobody in frame: drop any half-finished rep, and let the hold
-            // timer reset after its grace period.
-            _cancelCycle();
-            if (widget.selectedExercise.isHold) _updateHold(false);
-          }
-
-          // One rebuild per frame (this used to be two or three).
-          if (mounted) setState(() {});
+        if (poses.isNotEmpty) {
+          _analyzeMotion(poses.first.landmarks, form);
+        } else {
+          // Nobody in frame: drop any half-finished rep, and let the hold
+          // timer reset after its grace period.
+          _cancelCycle();
+          if (widget.selectedExercise.isHold) _updateHold(false);
         }
-      } catch (e) {
-        debugPrint("ML Kit Detection Error: $e");
       }
+    } catch (e) {
+      debugPrint("ML Kit Detection Error: $e");
+    } finally {
+      // Always released, even if something above throws.
+      _isProcessing = false;
     }
+  }
 
-    _isProcessing = false;
+  /// Arm exercises: legs are usually cropped or half out of frame, and their
+  /// guessed landmarks jitter, which kept "legs moving" red permanently.
+  FormResult _filterForm(FormResult f) {
+    if (!f.isWrong) return f;
+    final armExercise = switch (widget.selectedExercise.type) {
+      ExerciseType.forwardRaise ||
+      ExerciseType.sideRaise ||
+      ExerciseType.forwardPush ||
+      ExerciseType.bicepCurl =>
+        true,
+      _ => false,
+    };
+    if (!armExercise) return f;
+    final kept =
+        f.issues.where((i) => i.code != FormIssueCode.legsMoving).toList();
+    return kept.isEmpty ? FormResult.ok : FormResult(FormStatus.wrongForm, kept);
   }
 
   // ---------------------------------------------------------------------
@@ -368,43 +508,93 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
 
       case ExerciseType.forwardRaise:
       case ExerciseType.sideRaise:
-        if (hip != null && shoulder != null && wrist != null) {
-          calculatedAngle = _calculateAngle(hip, shoulder, wrist);
-          isValidRep = calculatedAngle >= exercise.targetAngle;
-          isRestPosition = calculatedAngle <= exercise.restAngle;
+        {
+          // Use whichever arm is raised (the old code only watched the left).
+          final raised = <double?>[
+            _jointAngle(landmarks, PoseLandmarkType.leftHip,
+                PoseLandmarkType.leftShoulder, PoseLandmarkType.leftWrist),
+            _jointAngle(landmarks, PoseLandmarkType.rightHip,
+                PoseLandmarkType.rightShoulder, PoseLandmarkType.rightWrist),
+          ].whereType<double>().toList();
+          if (raised.isNotEmpty) {
+            calculatedAngle = raised.reduce(max);
+            isValidRep = calculatedAngle >= exercise.targetAngle;
+            isRestPosition = calculatedAngle <= exercise.restAngle;
+          }
         }
         break;
 
       case ExerciseType.forwardPush:
-        if (shoulder != null && elbow != null && wrist != null) {
-          calculatedAngle = _calculateAngle(shoulder, elbow, wrist);
-          isValidRep = calculatedAngle >= exercise.targetAngle;
-          isRestPosition = calculatedAngle <= exercise.restAngle;
+        {
+          final extended = <double?>[
+            _jointAngle(landmarks, PoseLandmarkType.leftShoulder,
+                PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist),
+            _jointAngle(landmarks, PoseLandmarkType.rightShoulder,
+                PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist),
+          ].whereType<double>().toList();
+          if (extended.isNotEmpty) {
+            calculatedAngle = extended.reduce(max);
+            isValidRep = calculatedAngle >= exercise.targetAngle;
+            isRestPosition = calculatedAngle <= exercise.restAngle;
+          }
         }
         break;
 
       case ExerciseType.bicepCurl:
         {
-          // Use whichever arm is more bent (the working arm). The resting
-          // arm hangs straight, so it never triggers a rep by itself.
-          final angles = <double?>[
-            _jointAngle(
-              landmarks,
-              PoseLandmarkType.leftShoulder,
-              PoseLandmarkType.leftElbow,
-              PoseLandmarkType.leftWrist,
-            ),
-            _jointAngle(
-              landmarks,
-              PoseLandmarkType.rightShoulder,
-              PoseLandmarkType.rightElbow,
-              PoseLandmarkType.rightWrist,
-            ),
-          ].whereType<double>().toList();
+          // Track BOTH arms independently; a real curl needs the wrist to
+          // travel toward the shoulder while the elbow stays pinned low.
+          final left = _jointAngle(
+            landmarks,
+            PoseLandmarkType.leftShoulder,
+            PoseLandmarkType.leftElbow,
+            PoseLandmarkType.leftWrist,
+          );
+          final right = _jointAngle(
+            landmarks,
+            PoseLandmarkType.rightShoulder,
+            PoseLandmarkType.rightElbow,
+            PoseLandmarkType.rightWrist,
+          );
 
-          if (angles.isNotEmpty) {
-            calculatedAngle = angles.reduce(min);
-            isValidRep = calculatedAngle <= exercise.targetAngle;
+          double? best;
+          PoseLandmark? bestElbow;
+          PoseLandmark? bestWrist;
+          for (final entry in [
+            (left, PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist),
+            (right, PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist),
+          ]) {
+            final angle = entry.$1;
+            if (angle == null) continue;
+            if (best == null || angle < best) {
+              best = angle;
+              bestElbow = landmarks[entry.$2];
+              bestWrist = landmarks[entry.$3];
+            }
+          }
+
+          if (best != null && bestElbow != null && bestWrist != null) {
+            calculatedAngle = best;
+
+            // Elbow must hang below the shoulder line (image y grows down).
+            final shoulderY = landmarks[PoseLandmarkType.leftShoulder]?.y ??
+                landmarks[PoseLandmarkType.rightShoulder]?.y;
+            // Landmark coordinates are PIXELS, so tolerances must scale with
+            // the body (the old +/-0.05 / 0.12 were fractions of a pixel).
+            final torsoPx = (shoulder != null && hip != null)
+                ? _distance(shoulder, hip)
+                : 100.0;
+            final elbowPinned =
+                shoulderY == null || bestElbow.y > shoulderY - 0.15 * torsoPx;
+
+            // Wrist must be near shoulder height — the top of a curl.
+            final wristNearShoulder =
+                shoulderY != null && bestWrist.y <= shoulderY + 0.35 * torsoPx;
+
+            isValidRep =
+                calculatedAngle <= exercise.targetAngle &&
+                elbowPinned &&
+                wristNearShoulder;
             isRestPosition = calculatedAngle >= exercise.restAngle;
           }
         }
@@ -467,17 +657,30 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
         break; // handled by _analyzeHold above
     }
 
+    // Forgiving rest zone: count the rep once the joint is back through the
+    // first part of the range, rather than at the exact rest angle (arms
+    // that hang a bit away from the body never hit 20 degrees).
+    if (calculatedAngle != 0.0) {
+      final span = exercise.targetAngle - exercise.restAngle;
+      final returnAngle = exercise.restAngle + span * _restZone;
+      isRestPosition = span >= 0
+          ? calculatedAngle <= returnAngle
+          : calculatedAngle >= returnAngle;
+    }
+
     // 0.0 means "couldn't measure" (a needed landmark was missing). Don't let
     // that look like the patient leaving the rest position.
     if (calculatedAngle == 0.0) return;
 
-    _currentAngle = calculatedAngle;
-    _advanceRepCycle(
-      angle: calculatedAngle,
-      isValidRep: isValidRep,
-      isRest: isRestPosition,
-      form: form,
-    );
+    setState(() {
+      _currentAngle = calculatedAngle;
+      _advanceRepCycle(
+        angle: calculatedAngle,
+        isValidRep: isValidRep,
+        isRest: isRestPosition,
+        form: form,
+      );
+    });
 
     _checkCompletion();
   }
@@ -535,17 +738,15 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       } else {
         _rejectRep(bad.withMessage('Rep not counted. ${bad.message}'));
       }
-    } else if (_maxProgress >= FormThresholds.strict.attemptProgress &&
+    } else if (_maxProgress >= _thresholds.attemptProgress &&
         ms >= 500) {
       // They started the movement but never got to the target angle.
       final fb = _rangeFeedback(exercise.type);
-      _rejectRep(
-        FormIssue(
-          code: FormIssueCode.shortRange,
-          message: 'Rep not counted. ${fb.message}',
-          landmarks: fb.landmarks,
-        ),
-      );
+      _rejectRep(FormIssue(
+        code: FormIssueCode.shortRange,
+        message: 'Rep not counted. ${fb.message}',
+        landmarks: fb.landmarks,
+      ));
     }
   }
 
@@ -692,8 +893,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
     }
 
     // Strict: the clock only runs while the position is right AND the form
-    // checker is happy. Flailing or swaying pauses it, and after the grace
-    // period it resets.
+    // checker is happy.
     _updateHold(inPosition && !form.isWrong);
   }
 
@@ -709,12 +909,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       _holdStart ??= now;
       final elapsed = now.difference(_holdStart!).inMilliseconds / 1000.0;
 
-      _holdElapsed = elapsed > needed ? needed.toDouble() : elapsed;
+      setState(() {
+        _holdElapsed = elapsed > needed ? needed.toDouble() : elapsed;
+      });
 
       if (elapsed >= needed && !_holdCounted) {
         _holdCounted = true;
         _repScores.add(1.0);
-        _repCounter++;
+        setState(() => _repCounter++);
         _triggerFeedback();
         _checkCompletion();
       }
@@ -722,9 +924,11 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       _lostSince ??= now;
       if (now.difference(_lostSince!) > _holdGrace) {
         if (_holdStart != null || _holdElapsed != 0.0) {
-          _holdStart = null;
-          _holdCounted = false; // release, then hold again for the next one
-          _holdElapsed = 0.0;
+          setState(() {
+            _holdStart = null;
+            _holdCounted = false; // release, then hold again for the next one
+            _holdElapsed = 0.0;
+          });
         }
       }
     }
@@ -742,7 +946,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
     if (_repCounter < widget.selectedExercise.targetReps) return;
 
     setState(() => _isSessionComplete = true);
-    _cameraController?.stopImageStream();
+    _disposeCamera(); // session is over: stop the stream and free the camera
     _saveSession();
     _showCompletionBanner();
   }
@@ -783,11 +987,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
-              Icons.check_circle_rounded,
-              color: Colors.teal,
-              size: 64,
-            ),
+            const Icon(Icons.check_circle_rounded, color: Colors.teal, size: 64),
             const SizedBox(height: 12),
             const Text(
               'Session Complete!',
@@ -815,7 +1015,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
           TextButton(
             onPressed: () {
               Navigator.of(dialogContext).pop(); // close the dialog
-              Navigator.of(context).pop(); // back to the exercise list
+              if (mounted) Navigator.of(context).pop(); // back to the list
             },
             child: const Text('Done'),
           ),
@@ -844,16 +1044,11 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
         InputImageFormatValue.fromRawValue(image.format.raw) ??
         InputImageFormat.nv21;
 
-    final Uint8List bytes;
-    if (image.planes.length == 1) {
-      bytes = image.planes.first.bytes; // NV21 arrives as one plane: no copy
-    } else {
-      final WriteBuffer allBytes = WriteBuffer();
-      for (final Plane plane in image.planes) {
-        allBytes.putUint8List(plane.bytes);
-      }
-      bytes = allBytes.done().buffer.asUint8List();
+    final WriteBuffer allBytes = WriteBuffer();
+    for (final Plane plane in image.planes) {
+      allBytes.putUint8List(plane.bytes);
     }
+    final bytes = allBytes.done().buffer.asUint8List();
 
     final metadata = InputImageMetadata(
       size: Size(image.width.toDouble(), image.height.toDouble()),
@@ -867,32 +1062,68 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _audioPlayer.dispose();
-    _cameraController?.dispose();
-    _poseDetector.close();
+    // Order matters: stop the stream and camera first, then close ML Kit.
+    _disposeCamera().whenComplete(() => _poseDetector.close());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+    final exercise = widget.selectedExercise;
+
+    if (_cameraError != null) {
+      return Scaffold(
+        appBar: AppBar(title: Text(exercise.title)),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.videocam_off_rounded,
+                    size: 56, color: Colors.black38),
+                const SizedBox(height: 16),
+                Text(
+                  _cameraError!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 14, height: 1.4),
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton.icon(
+                  onPressed: _initCamera,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Try again'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    final exercise = widget.selectedExercise;
     final form = _effectiveForm;
     final isCorrect = !form.isWrong;
 
-    // The camera reports its natural shape as width/height in landscape, so a
-    // portrait screen needs the inverse.
-    final previewAspect = 1 / _cameraController!.value.aspectRatio;
-
     return Scaffold(
-      backgroundColor: Colors.black,
       appBar: AppBar(
         title: Text(exercise.title),
         backgroundColor: isCorrect ? Colors.teal : Colors.red,
         actions: [
+          IconButton(
+            icon: Icon(
+              Icons.flip,
+              color: _mirrorSkeleton ? Colors.white : Colors.white54,
+            ),
+            tooltip: "Flip skeleton (use if it moves opposite to you)",
+            onPressed: () => setState(() => _mirrorSkeleton = !_mirrorSkeleton),
+          ),
           IconButton(
             icon: const Icon(Icons.cameraswitch),
             tooltip: "Switch Camera",
@@ -903,34 +1134,27 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // Center + AspectRatio keeps the preview at the camera's real
-          // proportions instead of stretching it to the screen. The skeleton is
-          // painted inside the same box so the joints line up with the video.
-          Center(
-            child: AspectRatio(
-              aspectRatio: previewAspect,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  CameraPreview(_cameraController!),
-                  if (_imageSize != null && _detectedPoses.isNotEmpty)
-                    RepaintBoundary(
-                      child: CustomPaint(
-                        painter: PosePainter(
-                          _detectedPoses,
-                          _imageSize!,
-                          _rotation,
-                          isCorrect,
-                          _lensDirection,
-                          flaggedLandmarks: form.flagged,
-                          issues: form.issues,
-                        ),
-                      ),
-                    ),
-                ],
+          // Native-ratio preview (see _coverPreview). The plugin itself mirrors
+          // the FRONT preview like a selfie; this widget adds no flip.
+          const ColoredBox(color: Colors.black),
+          _AspectCoverPreview(controller: controller, cover: _coverPreview),
+
+          if (_imageSize != null && _detectedPoses.isNotEmpty)
+            CustomPaint(
+              painter: PosePainter(
+                _detectedPoses,
+                _imageSize!,
+                _rotation,
+                isCorrect,
+                _lensDirection,
+                // Front camera: preview is mirrored, ML Kit data is not, so
+                // the skeleton is flipped to match (see _mirrorSkeleton).
+                mirrorX: _mirrorSkeleton,
+                cover: _coverPreview,
+                flaggedLandmarks: form.flagged,
+                issues: form.issues,
               ),
             ),
-          ),
 
           // "Keep Centered: ..." / "Wrong Form: ..." message
           Positioned(
@@ -1020,6 +1244,17 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
                       ),
                     ],
                   ),
+                  if (!isCorrect) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Why red: ${form.issues.map((i) => i.code.name).join(', ')}',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
                   if (_rejectedReps > 0) ...[
                     const SizedBox(height: 8),
                     Text(
@@ -1041,23 +1276,20 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
   }
 }
 
-/// Camera preview that keeps the sensor's native aspect ratio and is
-/// centre-cropped to fill the screen (BoxFit.cover), so the image is never
-/// stretched. ML Kit returns landmarks in the same rotated, full-frame
-/// coordinate space, which PosePainter maps with an identical cover + crop
-/// transform — video and skeleton therefore line up exactly.
+/// Camera preview drawn at the sensor's native aspect ratio.
+///  - cover=false: the whole frame is visible (letterboxed), so nothing is
+///    cropped or stretched.
+///  - cover=true : the frame fills the screen and the overflow is cropped.
+/// PosePainter uses the identical mapping, so video and skeleton line up.
 ///
-/// IMPORTANT: the `camera` package does NOT mirror the front-camera preview
-/// on Android/CameraX — CameraPreview renders the raw, unmirrored sensor
-/// texture (there is no controller flag to change this), while the frames
-/// delivered to `startImageStream` are also unmirrored. So for a selfie-style
-/// mirror view we flip the preview horizontally ourselves (see below), and
-/// PosePainter mirrors the landmarks by the same single amount. If only ONE
-/// of the two flips, the skeleton appears inverted relative to the video.
+/// This widget must NOT apply its own horizontal flip: the `camera` plugin
+/// already mirrors the front preview, and PosePainter.mirrorX compensates
+/// for that on the skeleton side.
 class _AspectCoverPreview extends StatelessWidget {
   final CameraController controller;
+  final bool cover;
 
-  const _AspectCoverPreview({required this.controller});
+  const _AspectCoverPreview({required this.controller, this.cover = false});
 
   @override
   Widget build(BuildContext context) {
@@ -1066,59 +1298,39 @@ class _AspectCoverPreview extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    // previewSize is in sensor orientation (landscape). On a portrait device
-    // the displayed frame is rotated 90°, so swap width and height.
+    // Plugins disagree on whether previewSize is landscape or portrait, so
+    // don't trust its orientation: take the long/short sides and orient the
+    // frame to match the screen (portrait phone => tall frame).
+    final longSide = max(size.width, size.height);
+    final shortSide = min(size.width, size.height);
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
-    final frame = isLandscape ? size : Size(size.height, size.width);
+    final frame =
+        isLandscape ? Size(longSide, shortSide) : Size(shortSide, longSide);
 
-    final preview = LayoutBuilder(
+    return LayoutBuilder(
       builder: (context, constraints) {
-        final screen = Size(constraints.maxWidth, constraints.maxHeight);
-
-        // Uniform "cover" scale: big enough for both dimensions.
-        final scale = max(
-          screen.width / frame.width,
-          screen.height / frame.height,
-        );
+        final sx = constraints.maxWidth / frame.width;
+        final sy = constraints.maxHeight / frame.height;
+        final scale = cover ? max(sx, sy) : min(sx, sy);
         final w = frame.width * scale;
         final h = frame.height * scale;
 
         return ClipRect(
-          child: SizedBox.expand(
-            child: FittedBox(
-              fit: BoxFit.none,
-              alignment: Alignment.center,
-              child: SizedBox(
-                width: w,
-                height: h,
-                child: CameraPreview(controller),
-              ),
+          child: Center(
+            child: SizedBox(
+              width: w,
+              height: h,
+              child: CameraPreview(controller),
             ),
           ),
         );
       },
     );
-
-    // The `camera` package does NOT mirror the front-camera preview — it
-    // shows the raw (unmirrored) sensor texture. For a selfie-style mirror
-    // view we flip it horizontally here. PosePainter mirrors the landmarks
-    // by the same amount, so skeleton and video always stay in sync.
-    // Back cameras are rendered as-is.
-    final isFront =
-        controller.description.lensDirection == CameraLensDirection.front;
-
-    return isFront
-        ? Transform(
-            alignment: Alignment.center,
-            transform: Matrix4.diagonal3Values(-1.0, 1.0, 1.0),
-            child: preview,
-          )
-        : preview;
   }
 }
 
-/// Top-of-screen message: red bold label + the current fault, like the mockup.
+/// Top-of-screen message: red bold label + the current fault.
 class _FormBanner extends StatelessWidget {
   final FormResult form;
   const _FormBanner({required this.form});
@@ -1161,4 +1373,261 @@ class _FormBanner extends StatelessWidget {
       ),
     );
   }
+}
+
+// ===========================================================================
+// PosePainter (merged in from lib/widgets/pose_painter.dart)
+// ===========================================================================
+
+class PosePainter extends CustomPainter {
+  final List<Pose> poses;
+
+  /// Size of the analysis frame in PIXELS, already rotated to display
+  /// orientation (portrait phone => swapped W/H). Landmarks are mapped with
+  /// a uniform cover scale + centre-crop offset so the skeleton matches an
+  /// undistorted preview.
+  final Size absoluteImageSize;
+  final InputImageRotation rotation;
+  final bool isExerciseCorrect;
+  final CameraLensDirection cameraLensDirection;
+
+  /// Flip landmarks horizontally. True for the front camera: ML Kit sees the
+  /// unmirrored frame while the on-screen preview is a selfie mirror, so
+  /// without this flip the patient's right hand drives the skeleton's
+  /// left-side limb on screen.
+  final bool mirrorX;
+
+  /// Same choice as the preview: false = whole frame visible (min scale),
+  /// true = fill and crop (max scale).
+  final bool cover;
+
+  /// Joints the form checker wants highlighted (drawn larger with a red glow).
+  final Set<PoseLandmarkType> flaggedLandmarks;
+
+  /// Faults to explain with a callout bubble next to the offending joint.
+  final List<FormIssue> issues;
+
+  PosePainter(
+    this.poses,
+    this.absoluteImageSize,
+    this.rotation,
+    this.isExerciseCorrect,
+    this.cameraLensDirection, {
+    this.mirrorX = false,
+    this.cover = false,
+    this.flaggedLandmarks = const {},
+    this.issues = const [],
+  });
+
+  // Facial landmarks to exclude from drawing dots
+  static const Set<PoseLandmarkType> _faceLandmarks = {
+    PoseLandmarkType.nose,
+    PoseLandmarkType.leftEyeInner,
+    PoseLandmarkType.leftEye,
+    PoseLandmarkType.leftEyeOuter,
+    PoseLandmarkType.rightEyeInner,
+    PoseLandmarkType.rightEye,
+    PoseLandmarkType.rightEyeOuter,
+    PoseLandmarkType.leftEar,
+    PoseLandmarkType.rightEar,
+    PoseLandmarkType.leftMouth,
+    PoseLandmarkType.rightMouth,
+  };
+
+  static const List<List<PoseLandmarkType>> _bones = [
+    // Arms
+    [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow],
+    [PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist],
+    [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow],
+    [PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist],
+    // Legs
+    [PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee],
+    [PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle],
+    [PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee],
+    [PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle],
+    // Torso
+    [PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder],
+    [PoseLandmarkType.leftHip, PoseLandmarkType.rightHip],
+    [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip],
+    [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (poses.isEmpty) return;
+
+    final wrong = !isExerciseCorrect;
+    final lineColor = wrong ? Colors.redAccent : Colors.greenAccent;
+    // Red bones with yellow joints when the form is wrong.
+    final dotColor = wrong ? Colors.yellowAccent : Colors.greenAccent;
+
+    final dotPaint = Paint()
+      ..style = PaintingStyle.fill
+      ..color = dotColor;
+
+    final linePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4.0
+      ..strokeCap = StrokeCap.round
+      ..color = lineColor;
+
+    final hotLinePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6.5
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.red;
+
+    // Aspect-correct mapping: uniform cover scale + centre crop, matching
+    // _AspectCoverPreview.
+    final iw = absoluteImageSize.width;
+    final ih = absoluteImageSize.height;
+    if (iw <= 0 || ih <= 0) return;
+    final scale = cover
+        ? max(size.width / iw, size.height / ih)
+        : min(size.width / iw, size.height / ih);
+    final drawW = iw * scale;
+    final drawH = ih * scale;
+    final offX = (size.width - drawW) / 2.0;
+    final offY = (size.height - drawH) / 2.0;
+
+    for (final pose in poses) {
+      final Map<PoseLandmarkType, Offset> points = {};
+
+      pose.landmarks.forEach((type, landmark) {
+        if (landmark.likelihood > 0.5) {
+          var x = offX + landmark.x * scale;
+          final y = offY + landmark.y * scale;
+
+          // Mirror about the screen's vertical centre line. The preview is
+          // flipped around the same line (it is centred in the screen), so
+          // the skeleton and the video stay glued together.
+          if (mirrorX) x = size.width - x;
+          points[type] = Offset(x, y);
+        }
+      });
+
+      // Bones (thicker when they touch a flagged joint)
+      for (final bone in _bones) {
+        final p1 = points[bone[0]];
+        final p2 = points[bone[1]];
+        if (p1 == null || p2 == null) continue;
+        final hot = wrong &&
+            (flaggedLandmarks.contains(bone[0]) ||
+                flaggedLandmarks.contains(bone[1]));
+        canvas.drawLine(p1, p2, hot ? hotLinePaint : linePaint);
+      }
+
+      // Joint dots (never on the face)
+      points.forEach((type, p) {
+        if (!_faceLandmarks.contains(type)) {
+          canvas.drawCircle(p, 5, dotPaint);
+        }
+      });
+
+      if (wrong) {
+        _drawFlaggedJoints(canvas, points);
+        _drawCallouts(canvas, size, points);
+      }
+    }
+  }
+
+  void _drawFlaggedJoints(Canvas canvas, Map<PoseLandmarkType, Offset> points) {
+    final glow = Paint()..color = Colors.redAccent.withValues(alpha: 0.35);
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5
+      ..color = Colors.white;
+    final core = Paint()..color = Colors.redAccent;
+
+    for (final type in flaggedLandmarks) {
+      final p = points[type];
+      if (p == null) continue;
+      canvas.drawCircle(p, 18, glow);
+      canvas.drawCircle(p, 11, ring);
+      canvas.drawCircle(p, 6, core);
+    }
+  }
+
+  Offset? _anchorPoint(FormIssue issue, Map<PoseLandmarkType, Offset> points) {
+    final a = issue.anchor;
+    if (a != null && points[a] != null) return points[a];
+    for (final t in issue.landmarks) {
+      final p = points[t];
+      if (p != null) return p;
+    }
+    return null;
+  }
+
+  /// White bubble with a red border and red text, joined to the joint by a line.
+  void _drawCallouts(
+    Canvas canvas,
+    Size size,
+    Map<PoseLandmarkType, Offset> points,
+  ) {
+    const maxTextWidth = 150.0;
+    const pad = 8.0;
+    const red = Color(0xFFD50000);
+
+    final fill = Paint()..color = Colors.white.withValues(alpha: 0.95);
+    final border = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = red;
+    final leader = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..color = red;
+
+    var slot = 0;
+    for (final issue in issues) {
+      if (issue.code == FormIssueCode.notInFrame) continue;
+      if (slot >= 2) break; // keep the screen readable
+      final target = _anchorPoint(issue, points);
+      if (target == null) continue;
+
+      final tp = TextPainter(
+        text: TextSpan(
+          text: issue.message,
+          style: const TextStyle(
+            color: red,
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+            height: 1.2,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 4,
+        ellipsis: '…',
+      )..layout(maxWidth: maxTextWidth);
+
+      final w = tp.width + pad * 2;
+      final h = tp.height + pad * 2;
+
+      // Bubble goes on whichever side of the joint has more room; the first
+      // one above it and the second below so two callouts never overlap.
+      final onLeftHalf = target.dx < size.width / 2;
+      final left = (onLeftHalf ? target.dx + 28 : target.dx - 28 - w)
+          .clamp(8.0, size.width - w - 8.0)
+          .toDouble();
+      final top = (slot == 0 ? target.dy - h - 24 : target.dy + 24)
+          .clamp(8.0, size.height - h - 8.0)
+          .toDouble();
+
+      final rect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, top, w, h),
+        const Radius.circular(8),
+      );
+
+      final from = Offset(onLeftHalf ? left : left + w, top + h / 2);
+      canvas.drawLine(from, target, leader);
+      canvas.drawRRect(rect, fill);
+      canvas.drawRRect(rect, border);
+      tp.paint(canvas, Offset(left + pad, top + pad));
+
+      slot++;
+    }
+  }
+
+  @override
+  bool shouldRepaint(PosePainter oldDelegate) => true;
 }

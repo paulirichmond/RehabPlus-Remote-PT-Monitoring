@@ -334,7 +334,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
         final rotation =
             inputImage.metadata?.rotation ?? InputImageRotation.rotation0deg;
         // The painter wants the frame size AFTER rotation to upright.
-        final swap = rotation == InputImageRotation.rotation90deg ||
+        final swap =
+            rotation == InputImageRotation.rotation90deg ||
             rotation == InputImageRotation.rotation270deg;
         final w = image.width.toDouble();
         final h = image.height.toDouble();
@@ -374,14 +375,16 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       ExerciseType.forwardRaise ||
       ExerciseType.sideRaise ||
       ExerciseType.forwardPush ||
-      ExerciseType.bicepCurl =>
-        true,
+      ExerciseType.bicepCurl => true,
       _ => false,
     };
     if (!armExercise) return f;
-    final kept =
-        f.issues.where((i) => i.code != FormIssueCode.legsMoving).toList();
-    return kept.isEmpty ? FormResult.ok : FormResult(FormStatus.wrongForm, kept);
+    final kept = f.issues
+        .where((i) => i.code != FormIssueCode.legsMoving)
+        .toList();
+    return kept.isEmpty
+        ? FormResult.ok
+        : FormResult(FormStatus.wrongForm, kept);
   }
 
   // ---------------------------------------------------------------------
@@ -511,10 +514,18 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
         {
           // Use whichever arm is raised (the old code only watched the left).
           final raised = <double?>[
-            _jointAngle(landmarks, PoseLandmarkType.leftHip,
-                PoseLandmarkType.leftShoulder, PoseLandmarkType.leftWrist),
-            _jointAngle(landmarks, PoseLandmarkType.rightHip,
-                PoseLandmarkType.rightShoulder, PoseLandmarkType.rightWrist),
+            _jointAngle(
+              landmarks,
+              PoseLandmarkType.leftHip,
+              PoseLandmarkType.leftShoulder,
+              PoseLandmarkType.leftWrist,
+            ),
+            _jointAngle(
+              landmarks,
+              PoseLandmarkType.rightHip,
+              PoseLandmarkType.rightShoulder,
+              PoseLandmarkType.rightWrist,
+            ),
           ].whereType<double>().toList();
           if (raised.isNotEmpty) {
             calculatedAngle = raised.reduce(max);
@@ -527,10 +538,18 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       case ExerciseType.forwardPush:
         {
           final extended = <double?>[
-            _jointAngle(landmarks, PoseLandmarkType.leftShoulder,
-                PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist),
-            _jointAngle(landmarks, PoseLandmarkType.rightShoulder,
-                PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist),
+            _jointAngle(
+              landmarks,
+              PoseLandmarkType.leftShoulder,
+              PoseLandmarkType.leftElbow,
+              PoseLandmarkType.leftWrist,
+            ),
+            _jointAngle(
+              landmarks,
+              PoseLandmarkType.rightShoulder,
+              PoseLandmarkType.rightElbow,
+              PoseLandmarkType.rightWrist,
+            ),
           ].whereType<double>().toList();
           if (extended.isNotEmpty) {
             calculatedAngle = extended.reduce(max);
@@ -577,7 +596,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
             calculatedAngle = best;
 
             // Elbow must hang below the shoulder line (image y grows down).
-            final shoulderY = landmarks[PoseLandmarkType.leftShoulder]?.y ??
+            final shoulderY =
+                landmarks[PoseLandmarkType.leftShoulder]?.y ??
                 landmarks[PoseLandmarkType.rightShoulder]?.y;
             // Landmark coordinates are PIXELS, so tolerances must scale with
             // the body (the old +/-0.05 / 0.12 were fractions of a pixel).
@@ -738,15 +758,16 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
       } else {
         _rejectRep(bad.withMessage('Rep not counted. ${bad.message}'));
       }
-    } else if (_maxProgress >= _thresholds.attemptProgress &&
-        ms >= 500) {
+    } else if (_maxProgress >= _thresholds.attemptProgress && ms >= 500) {
       // They started the movement but never got to the target angle.
       final fb = _rangeFeedback(exercise.type);
-      _rejectRep(FormIssue(
-        code: FormIssueCode.shortRange,
-        message: 'Rep not counted. ${fb.message}',
-        landmarks: fb.landmarks,
-      ));
+      _rejectRep(
+        FormIssue(
+          code: FormIssueCode.shortRange,
+          message: 'Rep not counted. ${fb.message}',
+          landmarks: fb.landmarks,
+        ),
+      );
     }
   }
 
@@ -987,7 +1008,11 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.check_circle_rounded, color: Colors.teal, size: 64),
+            const Icon(
+              Icons.check_circle_rounded,
+              color: Colors.teal,
+              size: 64,
+            ),
             const SizedBox(height: 12),
             const Text(
               'Session Complete!',
@@ -1082,8 +1107,11 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.videocam_off_rounded,
-                    size: 56, color: Colors.black38),
+                const Icon(
+                  Icons.videocam_off_rounded,
+                  size: 56,
+                  color: Colors.black38,
+                ),
                 const SizedBox(height: 16),
                 Text(
                   _cameraError!,
@@ -1305,8 +1333,9 @@ class _AspectCoverPreview extends StatelessWidget {
     final shortSide = min(size.width, size.height);
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
-    final frame =
-        isLandscape ? Size(longSide, shortSide) : Size(shortSide, longSide);
+    final frame = isLandscape
+        ? Size(longSide, shortSide)
+        : Size(shortSide, longSide);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1511,7 +1540,8 @@ class PosePainter extends CustomPainter {
         final p1 = points[bone[0]];
         final p2 = points[bone[1]];
         if (p1 == null || p2 == null) continue;
-        final hot = wrong &&
+        final hot =
+            wrong &&
             (flaggedLandmarks.contains(bone[0]) ||
                 flaggedLandmarks.contains(bone[1]));
         canvas.drawLine(p1, p2, hot ? hotLinePaint : linePaint);

@@ -21,11 +21,12 @@ class PosePainter extends CustomPainter {
 
   /// When true the painter mirrors landmarks horizontally for the front
   /// camera. This is required because ML Kit analyses the UNMIRRORED
-  /// image-stream frames while _AspectCoverPreview flips the selfie video
-  /// horizontally to give the familiar mirror view. Flipping the landmark
-  /// X coordinate by the same amount keeps the skeleton glued to the video:
-  /// raise your right hand and the skeleton's hand rises on the right side
-  /// of the screen — mirror behaviour, not inverted.
+  /// image-stream frames while the platform shows the selfie preview
+  /// mirrored. Flipping the landmark X coordinate by that single amount
+  /// keeps the skeleton glued to the video: raise your right hand and the
+  /// skeleton's hand rises on the right side of the screen — mirror
+  /// behaviour, not inverted. _AspectCoverPreview must NOT flip anything,
+  /// or the two layers would double-mirror relative to each other.
   final bool mirrorFrontCamera;
 
   /// Joints the form checker wants highlighted (drawn larger with a red glow).
@@ -126,8 +127,10 @@ class PosePainter extends CustomPainter {
           var x = offX + landmark.x * scale;
           final y = offY + landmark.y * scale;
 
-          // Flip X axis for front camera mirroring (same axis the video is
-          // mirrored on, so skeleton and picture always agree).
+          // Optional X-axis mirror (only if mirrorFrontCamera is true).
+          // Currently disabled from the screen because on this device the
+          // video preview itself is unmirrored — mirroring here would make
+          // the skeleton move opposite to the body.
           if (mirror) x = size.width - x;
           points[type] = Offset(x, y);
         }

@@ -28,6 +28,8 @@ enum FormIssueCode {
   tooFast,
   kneeBent,
   otherLeg,
+  armCircling,
+  elbowDrifting,
   shortRange,
   notInFrame,
 }
@@ -203,6 +205,12 @@ class _Profile {
   final bool needsLegs;
   final bool needsArms;
 
+  /// When true (arm exercises), one complete left OR right arm chain is
+  /// enough to start tracking. A side-on phone routinely loses the far arm,
+  /// and demanding both sides paired kept the app stuck on "notInFrame" —
+  /// which froze the form state (stuck green) instead of updating it.
+  final bool armsPairwise;
+
   _Profile({
     required this.stationary,
     required this.working,
@@ -210,6 +218,7 @@ class _Profile {
     required this.upright,
     this.needsLegs = false,
     this.needsArms = false,
+    this.armsPairwise = false,
   });
 }
 
@@ -250,11 +259,14 @@ _Profile _profileFor(ExerciseType type) {
 
     case ExerciseType.bicepCurl:
       return _Profile(
-        stationary: {..._elbows, ..._legs}, // elbows pinned to the sides
+        // Elbows must stay pinned at the sides — that's what separates a
+        // real curl from arm circles. The wrist is the travelling joint.
+        stationary: {..._elbows, ..._legs},
         working: _wrists,
         torsoStill: true,
         upright: true,
         needsArms: true,
+        armsPairwise: true,
       );
 
     case ExerciseType.forwardRaise:
@@ -266,6 +278,7 @@ _Profile _profileFor(ExerciseType type) {
         torsoStill: true,
         upright: true,
         needsArms: true,
+        armsPairwise: true,
       );
 
     case ExerciseType.singleLegBalance:
@@ -389,10 +402,23 @@ class FormChecker {
             pair(PoseLandmarkType.leftAnkle, PoseLandmarkType.rightAnkle))) {
       return false;
     }
-    if (_profile.needsArms &&
-        !(pair(PoseLandmarkType.leftElbow, PoseLandmarkType.rightElbow) &&
-            pair(PoseLandmarkType.leftWrist, PoseLandmarkType.rightWrist))) {
-      return false;
+    if (_profile.needsArms) {
+      if (_profile.armsPairwise) {
+        // Arm exercises: one complete same-side chain (elbow + wrist) is
+        // enough. The old paired check demanded BOTH elbows AND both
+        // wrists, which failed constantly with a front camera and left the
+        // app stuck reporting "notInFrame" instead of judging the form.
+        final leftArm =
+            _ok(lm[PoseLandmarkType.leftElbow]) &&
+            _ok(lm[PoseLandmarkType.leftWrist]);
+        final rightArm =
+            _ok(lm[PoseLandmarkType.rightElbow]) &&
+            _ok(lm[PoseLandmarkType.rightWrist]);
+        if (!leftArm && !rightArm) return false;
+      } else if (!(pair(PoseLandmarkType.leftElbow, PoseLandmarkType.rightElbow) &&
+          pair(PoseLandmarkType.leftWrist, PoseLandmarkType.rightWrist))) {
+        return false;
+      }
     }
     return true;
   }
@@ -593,6 +619,66 @@ class FormChecker {
     Map<PoseLandmarkType, PoseLandmark> lm,
   ) {
     switch (exercise.type) {
+      case ExerciseType.bicepCurl:
+        // Catch the "arm circles instead of curls" cheat directly. A curl
+        // takes the wrist UP toward the shoulder in a vertical arc with the
+        // elbow pinned at the side; circling sweeps the wrist through a wide
+        // horizontal loop that drags the elbow away from the torso.
+        final sh = _meanOf(_shoulders);
+        if (sh != null) {
+          for (final side in const [
+            (PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist),
+            (PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist),
+          ]) {
+            final elbow = _smooth[side.$1];
+            final wrist = _smooth[side.$2];
+            if (elbow == null || wrist == null) continue;
+
+            final elbowRange = _range(side.$1, _torsoLen ?? 1.0);
+            final wristRange = _range(side.$2, _torsoLen ?? 1.0);
+            final torso = _torsoLen;
+            if (elbowRange == null || wristRange == null || torso == null) {
+              continue;
+            }
+
+            // Elbow wandered far from its spot while the arm was "active".
+            if (elbowRange > th.stationaryRange * 0.8 &&
+                wristRange > th.stationaryRange) {
+              out.add(FormIssue(
+                code: FormIssueCode.armCircling,
+                message: 'That is an arm circle, not a curl. Keep your elbow '
+                    'at your side and fold your forearm up.',
+                landmarks: {side.$1, side.$2},
+                anchor: side.$1,
+              ));
+            } else if (elbowRange > th.stationaryRange) {
+              out.add(FormIssue(
+                code: FormIssueCode.elbowDrifting,
+                message: 'Elbow is drifting. Pin it to your side.',
+                landmarks: {side.$1},
+                anchor: side.$1,
+              ));
+            }
+
+            // Wrist must rise ABOVE the elbow during the rep (curling up),
+            // never orbit around it horizontally.
+            final wristAboveElbow = wrist.dy < elbow.dy - 0.05 * torso;
+            final nearShoulderHeight = (wrist - sh).distance < 0.45 * torso;
+            if (wristRange > th.stationaryRange &&
+                !wristAboveElbow &&
+                !nearShoulderHeight) {
+              out.add(FormIssue(
+                code: FormIssueCode.armCircling,
+                message: 'Curl straight up toward your shoulder, '
+                    'do not swing in circles.',
+                landmarks: {side.$2},
+                anchor: side.$2,
+              ));
+            }
+          }
+        }
+        break;
+
       case ExerciseType.kneeExtension:
         final l = _angle(lm, PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee,
             PoseLandmarkType.leftAnkle);

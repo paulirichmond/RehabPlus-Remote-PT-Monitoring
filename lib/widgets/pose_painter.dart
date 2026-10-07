@@ -1,4 +1,6 @@
 // lib/widgets/pose_painter.dart
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
@@ -7,10 +9,20 @@ import '../services/form_checker.dart';
 
 class PosePainter extends CustomPainter {
   final List<Pose> poses;
+
+  /// Size of the analysis frame in PIXELS, already rotated to display
+  /// orientation (portrait phone => swapped W/H). Landmarks are mapped with
+  /// a uniform cover scale + centre-crop offset so the skeleton matches an
+  /// undistorted preview.
   final Size absoluteImageSize;
   final InputImageRotation rotation;
   final bool isExerciseCorrect;
   final CameraLensDirection cameraLensDirection;
+
+  /// When true the painter mirrors landmarks horizontally for the front
+  /// camera. The screen layer must then render the video UNMIRRORED
+  /// (ignoreFrontCameraOrientation = false) so picture and skeleton agree.
+  final bool mirrorFrontCamera;
 
   /// Joints the form checker wants highlighted (drawn larger with a red glow).
   final Set<PoseLandmarkType> flaggedLandmarks;
@@ -24,6 +36,7 @@ class PosePainter extends CustomPainter {
     this.rotation,
     this.isExerciseCorrect,
     this.cameraLensDirection, {
+    this.mirrorFrontCamera = false,
     this.flaggedLandmarks = const {},
     this.issues = const [],
   });
@@ -86,18 +99,32 @@ class PosePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..color = Colors.red;
 
+    // --- Aspect-correct mapping ------------------------------------------
+    // The preview is drawn COVER-first (uniform scale + centre crop), never
+    // stretched, so landmarks must be mapped with the same uniform scale.
+    // absoluteImageSize is in analysis-image pixels already rotated to
+    // display orientation (portrait phone => swapped W/H).
+    final iw = absoluteImageSize.width;
+    final ih = absoluteImageSize.height;
+    if (iw <= 0 || ih <= 0) return;
+    final scale = max(size.width / iw, size.height / ih);
+    final drawW = iw * scale;
+    final drawH = ih * scale;
+    final offX = (size.width - drawW) / 2.0;
+    final offY = (size.height - drawH) / 2.0;
+    final mirror = mirrorFrontCamera;
+
     for (final pose in poses) {
       final Map<PoseLandmarkType, Offset> points = {};
 
       pose.landmarks.forEach((type, landmark) {
         if (landmark.likelihood > 0.5) {
-          double x = landmark.x * size.width / absoluteImageSize.width;
-          double y = landmark.y * size.height / absoluteImageSize.height;
+          var x = offX + landmark.x * scale;
+          final y = offY + landmark.y * scale;
 
-          // Flip X axis for front camera mirroring
-          if (cameraLensDirection == CameraLensDirection.front) {
-            x = size.width - x;
-          }
+          // Flip X axis for front camera mirroring (same axis the video is
+          // mirrored on, so skeleton and picture always agree).
+          if (mirror) x = size.width - x;
           points[type] = Offset(x, y);
         }
       });

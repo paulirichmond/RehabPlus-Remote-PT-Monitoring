@@ -122,10 +122,19 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
     _initCamera();
   }
 
+  /// Pose analysis is capped to roughly this rate (ms between processed
+  /// frames). ~15 fps is plenty for slow rehab movements and takes the heavy
+  /// accurate-mode inference off the critical path.
+  static const int _minFrameIntervalMs = 66;
+
   void _initPoseDetector() {
+    // "accurate" runs the heavy BlazePose full model on every frame and was
+    // the single biggest source of lag. The lightweight "benchmark" model
+    // gives the same 33 landmarks at a fraction of the cost, which is all
+    // the joint-angle math in this app needs.
     final options = PoseDetectorOptions(
       mode: PoseDetectionMode.stream,
-      model: PoseDetectionModel.accurate,
+      model: PoseDetectionModel.benchmark,
     );
     _poseDetector = PoseDetector(options: options);
   }
@@ -141,7 +150,9 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
 
     _cameraController = CameraController(
       camera,
-      ResolutionPreset.medium,
+      // Low resolution: ML Kit downscales internally anyway, so feeding it
+      // fewer pixels means faster inference and less memory churn per frame.
+      ResolutionPreset.low,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.nv21,
     );
@@ -171,8 +182,22 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
     await _initCamera();
   }
 
+  /// Timestamp of the last processed frame — used to cap the analysis rate.
+  int _lastFrameMs = 0;
+
   void _processFrame(CameraImage image, CameraDescription camera) async {
+    // Back-pressure: skip frames while ML Kit is still busy with an earlier
+    // one instead of queueing them up (the old behaviour behind the lag).
     if (_isProcessing || _isSessionComplete) return;
+
+    // Throttle pose analysis to ~15 fps. The model runs on a background
+    // thread but each accurate-mode inference still costs CPU/battery; human
+    // rehab movements are slow enough that 15 Hz loses nothing, and it frees
+    // the device for smooth rendering.
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _lastFrameMs < _minFrameIntervalMs) return;
+    _lastFrameMs = nowMs;
+
     _isProcessing = true;
 
     final inputImage = _inputImageFromCameraImage(image, camera);
@@ -180,7 +205,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       try {
         final List<Pose> poses = await _poseDetector.processImage(inputImage);
 
-        if (mounted) {
+        if (mounted && !_isSessionComplete) {
           // Judge the form first so the overlay and the rep logic agree.
           final form = poses.isEmpty
               ? _checker.evaluateNoPose()
@@ -356,26 +381,58 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
 
       case ExerciseType.bicepCurl:
         {
-          // Use whichever arm is more bent (the working arm). The resting
-          // arm hangs straight, so it never triggers a rep by itself.
-          final angles = <double?>[
-            _jointAngle(
-              landmarks,
-              PoseLandmarkType.leftShoulder,
-              PoseLandmarkType.leftElbow,
-              PoseLandmarkType.leftWrist,
-            ),
-            _jointAngle(
-              landmarks,
-              PoseLandmarkType.rightShoulder,
-              PoseLandmarkType.rightElbow,
-              PoseLandmarkType.rightWrist,
-            ),
-          ].whereType<double>().toList();
+          // Track BOTH arms independently. The old code took min(left,right)
+          // every frame, so circling an arm (which drags the shoulder along
+          // and momentarily "bends" the elbow) looked identical to a curl.
+          // A real curl is now verified by requiring the wrist to travel
+          // vertically toward the shoulder while the elbow stays pinned low.
+          final left = _jointAngle(
+            landmarks,
+            PoseLandmarkType.leftShoulder,
+            PoseLandmarkType.leftElbow,
+            PoseLandmarkType.leftWrist,
+          );
+          final right = _jointAngle(
+            landmarks,
+            PoseLandmarkType.rightShoulder,
+            PoseLandmarkType.rightElbow,
+            PoseLandmarkType.rightWrist,
+          );
 
-          if (angles.isNotEmpty) {
-            calculatedAngle = angles.reduce(min);
-            isValidRep = calculatedAngle <= exercise.targetAngle;
+          double? best;
+          PoseLandmark? bestElbow;
+          PoseLandmark? bestWrist;
+          for (final entry in [
+            (left, PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist),
+            (right, PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist),
+          ]) {
+            final angle = entry.$1;
+            if (angle == null) continue;
+            if (best == null || angle < best!) {
+              best = angle;
+              bestElbow = landmarks[entry.$2];
+              bestWrist = landmarks[entry.$3];
+            }
+          }
+
+          if (best != null && bestElbow != null && bestWrist != null) {
+            calculatedAngle = best;
+
+            // Elbow must hang below the shoulder line (image y grows down).
+            final shoulderY = landmarks[PoseLandmarkType.leftShoulder]?.y ??
+                landmarks[PoseLandmarkType.rightShoulder]?.y;
+            final elbowPinned =
+                shoulderY == null || bestElbow.y > shoulderY - 0.05;
+
+            // Wrist must be near the shoulder height — the top of a curl.
+            // Circling sends the wrist out to the sides, not up.
+            final wristNearShoulder = shoulderY != null &&
+                bestWrist.y <= shoulderY + 0.12;
+
+            isValidRep =
+                calculatedAngle <= exercise.targetAngle &&
+                elbowPinned &&
+                wristNearShoulder;
             isRestPosition = calculatedAngle >= exercise.restAngle;
           }
         }
@@ -863,7 +920,10 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          CameraPreview(_cameraController!),
+          // Undistorted preview: the sensor frame keeps its native aspect
+          // ratio and is centre-cropped to fill the screen (BoxFit.cover),
+          // instead of being stretched 4:3 -> 16:9 like before.
+          _AspectCoverPreview(controller: _cameraController!),
 
           if (_imageSize != null && _detectedPoses.isNotEmpty)
             CustomPaint(
@@ -873,6 +933,10 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
                 _rotation,
                 isCorrect,
                 _lensDirection,
+                // Painter mirrors landmarks; the video layer below renders
+                // unmirrored so both agree exactly.
+                mirrorFrontCamera:
+                    _lensDirection == CameraLensDirection.front,
                 flaggedLandmarks: form.flagged,
                 issues: form.issues,
               ),
@@ -988,8 +1052,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
 }
 
 /// Top-of-screen message: red bold label + the current fault, like the mockup.
-class _FormBanner extends StatelessWidget {
-  final FormResult form;
+class _FormBanner extends StatelessWidget {  final FormResult form;
   const _FormBanner({required this.form});
 
   @override

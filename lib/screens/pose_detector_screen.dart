@@ -14,6 +14,7 @@ import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import '../models/exercise_model.dart';
 import '../models/session.dart';
 import '../services/app_provider.dart';
+import '../services/form_checker.dart';
 import '../widgets/pose_painter.dart';
 
 class PoseDetectorScreen extends StatefulWidget {
@@ -32,17 +33,52 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
 
   final AudioPlayer _audioPlayer = AudioPlayer();
 
+  // pubspec registers assets/successSound.mp3 (the old code asked for
+  // chime.mp3, which isn't bundled and threw on every rep).
   void _triggerFeedback() async {
-    await _audioPlayer.play(AssetSource('chime.mp3'));
+    try {
+      await _audioPlayer.play(AssetSource('successSound.mp3'));
+    } catch (e) {
+      debugPrint('Audio error: $e');
+    }
     if (await Vibration.hasVibrator() ?? false) {
       Vibration.vibrate(duration: 150);
+    }
+  }
+
+  /// Double buzz for wrong form / rejected rep (throttled so it can't spam).
+  DateTime _lastBuzz = DateTime.fromMillisecondsSinceEpoch(0);
+  Future<void> _triggerWrongFeedback() async {
+    final now = DateTime.now();
+    if (now.difference(_lastBuzz).inMilliseconds < 1500) return;
+    _lastBuzz = now;
+    if (await Vibration.hasVibrator() ?? false) {
+      Vibration.vibrate(pattern: [0, 120, 80, 120]);
     }
   }
 
   int _repCounter = 0;
   String _stage = "down";
   double _currentAngle = 0.0;
-  bool _isCorrect = true;
+
+  // ---- Form checking ----
+  late final FormChecker _checker;
+  FormResult _form = FormResult.ok;
+  bool _wasWrong = false;
+
+  // One-off events ("rep not counted", "leg too low") that should stay on
+  // screen for a moment after the frame that caused them.
+  FormIssue? _flash;
+  DateTime? _flashUntil;
+
+  // ---- Rep cycle (a rep = leave rest, reach target, come back to rest) ----
+  bool _cycleActive = false;
+  DateTime? _cycleStart;
+  FormIssue? _cycleViolation; // first form fault seen during this rep
+  double _maxProgress = 0.0; // furthest toward target this rep (0..1+)
+  double? _baseline; // the patient's own resting angle
+  int _rejectedReps = 0;
+  final List<double> _repScores = []; // 1.0 = clean rep, 0.0 = rejected rep
 
   // ---- Session completion state ----
   bool _isSessionComplete = false;
@@ -62,10 +98,26 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
   InputImageRotation _rotation = InputImageRotation.rotation0deg;
   CameraLensDirection _lensDirection = CameraLensDirection.front;
 
+  /// Live faults plus any recent one-off event.
+  FormResult get _effectiveForm {
+    final flash = _flash;
+    final until = _flashUntil;
+    if (flash == null || until == null || DateTime.now().isAfter(until)) {
+      return _form;
+    }
+    return _form.plus(flash);
+  }
+
+  void _flashIssue(FormIssue issue) {
+    _flash = issue;
+    _flashUntil = DateTime.now().add(const Duration(milliseconds: 1800));
+  }
+
   @override
   void initState() {
     super.initState();
     _sessionStart = DateTime.now();
+    _checker = FormChecker(widget.selectedExercise);
     _initPoseDetector();
     _initCamera();
   }
@@ -114,6 +166,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       _cameraController = null;
     }
 
+    _checker.reset();
+    _cancelCycle();
     await _initCamera();
   }
 
@@ -127,19 +181,30 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
         final List<Pose> poses = await _poseDetector.processImage(inputImage);
 
         if (mounted) {
+          // Judge the form first so the overlay and the rep logic agree.
+          final form = poses.isEmpty
+              ? _checker.evaluateNoPose()
+              : _checker.evaluate(poses.first.landmarks);
+
           setState(() {
             _detectedPoses = poses;
             _imageSize = Size(image.height.toDouble(), image.width.toDouble());
             _rotation =
                 inputImage.metadata?.rotation ??
                 InputImageRotation.rotation0deg;
+            _form = form;
           });
 
+          if (form.isWrong && !_wasWrong) _triggerWrongFeedback();
+          _wasWrong = form.isWrong;
+
           if (poses.isNotEmpty) {
-            _analyzeMotion(poses.first.landmarks);
-          } else if (widget.selectedExercise.isHold) {
-            // Nobody in frame: lets the hold timer reset after the grace period.
-            _updateHold(false);
+            _analyzeMotion(poses.first.landmarks, form);
+          } else {
+            // Nobody in frame: drop any half-finished rep, and let the hold
+            // timer reset after its grace period.
+            _cancelCycle();
+            if (widget.selectedExercise.isHold) _updateHold(false);
           }
         }
       } catch (e) {
@@ -181,12 +246,22 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
   // Rep-based exercises
   // ---------------------------------------------------------------------
 
-  void _analyzeMotion(Map<PoseLandmarkType, PoseLandmark> landmarks) {
+  void _analyzeMotion(
+    Map<PoseLandmarkType, PoseLandmark> landmarks,
+    FormResult form,
+  ) {
     final exercise = widget.selectedExercise;
+
+    // Patient isn't properly framed: nothing counts until they are.
+    if (form.isNotInFrame) {
+      _cancelCycle();
+      if (exercise.isHold) _updateHold(false);
+      return;
+    }
 
     // Timed holds use their own logic.
     if (exercise.isHold) {
-      _analyzeHold(landmarks);
+      _analyzeHold(landmarks, form);
       return;
     }
 
@@ -363,30 +438,158 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
         break; // handled by _analyzeHold above
     }
 
+    // 0.0 means "couldn't measure" (a needed landmark was missing). Don't let
+    // that look like the patient leaving the rest position.
+    if (calculatedAngle == 0.0) return;
+
     setState(() {
       _currentAngle = calculatedAngle;
-
-      if (isValidRep) {
-        _isCorrect = true;
-        if (_stage == "down") {
-          _stage = "up";
-          _repCounter++;
-          _triggerFeedback();
-        }
-      } else if (isRestPosition) {
-        _stage = "down";
-        _isCorrect = true;
-      }
+      _advanceRepCycle(
+        angle: calculatedAngle,
+        isValidRep: isValidRep,
+        isRest: isRestPosition,
+        form: form,
+      );
     });
 
     _checkCompletion();
   }
 
   // ---------------------------------------------------------------------
+  // Strict rep accounting
+  //
+  // A rep only counts if the patient (1) leaves rest, (2) reaches the target
+  // angle, (3) returns to rest, AND (4) the form checker raised no fault at
+  // any point in between. Anything else is rejected and recorded as a 0.0
+  // compliance score, so history/therapist stats reflect real quality.
+  // ---------------------------------------------------------------------
+
+  void _advanceRepCycle({
+    required double angle,
+    required bool isValidRep,
+    required bool isRest,
+    required FormResult form,
+  }) {
+    if (isRest) {
+      if (_cycleActive) _finishCycle();
+      _cancelCycle();
+      // Learn the patient's own resting angle (used to judge partial reps).
+      _baseline = _baseline == null ? angle : _baseline! * 0.8 + angle * 0.2;
+      return;
+    }
+
+    if (!_cycleActive) {
+      _cycleActive = true;
+      _cycleStart = DateTime.now();
+      _cycleViolation = null;
+      _maxProgress = 0.0;
+    }
+
+    if (form.isWrong) _cycleViolation ??= form.primary;
+    _maxProgress = max(_maxProgress, _progress(angle));
+
+    if (isValidRep && _stage == "down") {
+      _stage = "up"; // target reached; the rep is judged on the way back
+    }
+  }
+
+  void _finishCycle() {
+    final exercise = widget.selectedExercise;
+    final ms = DateTime.now()
+        .difference(_cycleStart ?? DateTime.now())
+        .inMilliseconds;
+
+    if (_stage == "up") {
+      final bad = _cycleViolation;
+      if (bad == null) {
+        _repCounter++;
+        _repScores.add(1.0);
+        _triggerFeedback();
+      } else {
+        _rejectRep(bad.withMessage('Rep not counted. ${bad.message}'));
+      }
+    } else if (_maxProgress >= FormThresholds.strict.attemptProgress &&
+        ms >= 500) {
+      // They started the movement but never got to the target angle.
+      final fb = _rangeFeedback(exercise.type);
+      _rejectRep(FormIssue(
+        code: FormIssueCode.shortRange,
+        message: 'Rep not counted. ${fb.message}',
+        landmarks: fb.landmarks,
+      ));
+    }
+  }
+
+  void _rejectRep(FormIssue issue) {
+    _rejectedReps++;
+    _repScores.add(0.0);
+    _flashIssue(issue);
+    _triggerWrongFeedback();
+  }
+
+  void _cancelCycle() {
+    _cycleActive = false;
+    _cycleStart = null;
+    _cycleViolation = null;
+    _maxProgress = 0.0;
+    _stage = "down";
+  }
+
+  /// 0 = at the patient's resting angle, 1 = at the target angle.
+  double _progress(double angle) {
+    final e = widget.selectedExercise;
+    final base = _baseline ?? e.restAngle;
+    final span = e.targetAngle - base;
+    if (span.abs() < 10) return 0.0; // degenerate range, don't guess
+    return (angle - base) / span;
+  }
+
+  ({String message, Set<PoseLandmarkType> landmarks}) _rangeFeedback(
+    ExerciseType type,
+  ) {
+    const ankles = {PoseLandmarkType.leftAnkle, PoseLandmarkType.rightAnkle};
+    const wrists = {PoseLandmarkType.leftWrist, PoseLandmarkType.rightWrist};
+    const hips = {PoseLandmarkType.leftHip, PoseLandmarkType.rightHip};
+
+    switch (type) {
+      case ExerciseType.kneeExtension:
+        return (
+          message: 'Leg is too low. Raise it higher to straighten your knee.',
+          landmarks: ankles,
+        );
+      case ExerciseType.straightLegRaise:
+        return (message: 'Leg is too low. Lift it higher.', landmarks: ankles);
+      case ExerciseType.kneeFlexion:
+      case ExerciseType.heelSlide:
+        return (message: 'Bend your knee further.', landmarks: ankles);
+      case ExerciseType.forwardRaise:
+      case ExerciseType.sideRaise:
+        return (
+          message: 'Arm is too low. Raise it to shoulder height.',
+          landmarks: wrists,
+        );
+      case ExerciseType.forwardPush:
+        return (message: 'Push all the way out.', landmarks: wrists);
+      case ExerciseType.bicepCurl:
+        return (message: 'Curl all the way up.', landmarks: wrists);
+      case ExerciseType.sitToStand:
+        return (message: 'Stand up fully.', landmarks: hips);
+      case ExerciseType.gluteBridge:
+        return (message: 'Lift your hips higher.', landmarks: hips);
+      case ExerciseType.singleLegBalance:
+      case ExerciseType.wallSit:
+        return (message: 'Hold the full position.', landmarks: ankles);
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Timed holds
   // ---------------------------------------------------------------------
 
-  void _analyzeHold(Map<PoseLandmarkType, PoseLandmark> landmarks) {
+  void _analyzeHold(
+    Map<PoseLandmarkType, PoseLandmark> landmarks,
+    FormResult form,
+  ) {
     final exercise = widget.selectedExercise;
     bool inPosition = false;
 
@@ -458,7 +661,10 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
         break;
     }
 
-    _updateHold(inPosition);
+    // Strict: the clock only runs while the position is right AND the form
+    // checker is happy. Flailing or swaying pauses it, and after the grace
+    // period it resets.
+    _updateHold(inPosition && !form.isWrong);
   }
 
   /// Call once per processed frame. Counts up while [inPosition] is true and
@@ -474,12 +680,12 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       final elapsed = now.difference(_holdStart!).inMilliseconds / 1000.0;
 
       setState(() {
-        _isCorrect = true;
         _holdElapsed = elapsed > needed ? needed.toDouble() : elapsed;
       });
 
       if (elapsed >= needed && !_holdCounted) {
         _holdCounted = true;
+        _repScores.add(1.0);
         setState(() => _repCounter++);
         _triggerFeedback();
         _checkCompletion();
@@ -527,10 +733,12 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
       completedSets: 1,
       targetReps: exercise.targetReps,
       targetSets: 1,
-      // This flow doesn't score individual reps for compliance the way
-      // ComplianceTracker does, so every completed rep/hold counts as
-      // fully compliant.
-      repComplianceScores: List.filled(_repCounter, 1.0),
+      // One score per attempt: 1.0 for a clean rep/hold, 0.0 for a rep that
+      // was rejected for form or range. overallCompliance = clean / attempts.
+      repComplianceScores: List<double>.from(_repScores),
+      notes: _rejectedReps > 0
+          ? '$_rejectedReps rep(s) rejected for poor form or range'
+          : null,
     );
 
     if (!mounted) return;
@@ -563,6 +771,14 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.black54),
             ),
+            if (_rejectedReps > 0) ...[
+              const SizedBox(height: 8),
+              Text(
+                '$_rejectedReps attempt(s) were not counted because of form.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+              ),
+            ],
           ],
         ),
         actions: [
@@ -629,11 +845,13 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
     }
 
     final exercise = widget.selectedExercise;
+    final form = _effectiveForm;
+    final isCorrect = !form.isWrong;
 
     return Scaffold(
       appBar: AppBar(
         title: Text(exercise.title),
-        backgroundColor: _isCorrect ? Colors.teal : Colors.red,
+        backgroundColor: isCorrect ? Colors.teal : Colors.red,
         actions: [
           IconButton(
             icon: const Icon(Icons.cameraswitch),
@@ -653,10 +871,20 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
                 _detectedPoses,
                 _imageSize!,
                 _rotation,
-                _isCorrect,
+                isCorrect,
                 _lensDirection,
+                flaggedLandmarks: form.flagged,
+                issues: form.issues,
               ),
             ),
+
+          // "Keep Centered: ..." / "Wrong Form: ..." message
+          Positioned(
+            top: 8,
+            left: 16,
+            right: 16,
+            child: _FormBanner(form: form),
+          ),
 
           Positioned(
             bottom: 20,
@@ -665,7 +893,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
             child: Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: (_isCorrect ? Colors.black87 : Colors.red.shade900)
+                color: (isCorrect ? Colors.black87 : Colors.red.shade900)
                     .withValues(alpha: 0.85),
                 borderRadius: BorderRadius.circular(12),
               ),
@@ -682,8 +910,8 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
                             .toDouble(),
                         minHeight: 8,
                         backgroundColor: Colors.white24,
-                        valueColor: const AlwaysStoppedAnimation<Color>(
-                          Colors.greenAccent,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          isCorrect ? Colors.greenAccent : Colors.redAccent,
                         ),
                       ),
                     ),
@@ -727,7 +955,7 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
                                 ? "${_holdElapsed.toStringAsFixed(1)} / ${exercise.holdSeconds}s"
                                 : "${_currentAngle.round()}°",
                             style: TextStyle(
-                              color: _isCorrect
+                              color: isCorrect
                                   ? Colors.greenAccent
                                   : Colors.redAccent,
                               fontSize: 28,
@@ -738,11 +966,67 @@ class _PoseDetectorScreenState extends State<PoseDetectorScreen> {
                       ),
                     ],
                   ),
+                  if (_rejectedReps > 0) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Not counted: $_rejectedReps',
+                      style: const TextStyle(
+                        color: Colors.redAccent,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Top-of-screen message: red bold label + the current fault, like the mockup.
+class _FormBanner extends StatelessWidget {
+  final FormResult form;
+  const _FormBanner({required this.form});
+
+  @override
+  Widget build(BuildContext context) {
+    if (form.isOk) return const SizedBox.shrink();
+
+    final label = form.isNotInFrame ? 'Keep Centered: ' : 'Wrong Form: ';
+    final message = form.primary?.message ?? '';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: RichText(
+        textAlign: TextAlign.center,
+        text: TextSpan(
+          children: [
+            TextSpan(
+              text: label,
+              style: const TextStyle(
+                color: Colors.redAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+            TextSpan(
+              text: message,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

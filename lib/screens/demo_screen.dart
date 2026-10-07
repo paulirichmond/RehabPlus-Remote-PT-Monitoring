@@ -35,58 +35,95 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
       icon: PhosphorIconsRegular.chartLineUp,
       color: Color(0xFF23A8AA),
       title: 'Track Progress',
-      subtitle: 'Monitor your weekly recovery with visual charts and day-by-day check-ins.',
+      subtitle:
+          'Monitor your weekly recovery with visual charts and day-by-day check-ins.',
       preview: _PreviewType.progress,
     ),
     _DemoFeature(
       icon: PhosphorIconsRegular.barbell,
       color: Color(0xFF4A90D9),
       title: 'Exercise Plans',
-      subtitle: 'Follow guided rehab exercises assigned by your therapist with step-by-step instructions.',
+      subtitle:
+          'Follow guided rehab exercises assigned by your therapist with step-by-step instructions.',
       preview: _PreviewType.exercise,
     ),
     _DemoFeature(
       icon: PhosphorIconsRegular.chatCircle,
       color: Color(0xFF7C4DFF),
       title: 'Message Therapist',
-      subtitle: 'Stay connected with your therapist through real-time messaging and quick updates.',
+      subtitle:
+          'Stay connected with your therapist through real-time messaging and quick updates.',
       preview: _PreviewType.messages,
     ),
     _DemoFeature(
       icon: PhosphorIconsRegular.bell,
       color: Color(0xFFFF6B35),
       title: 'Smart Reminders',
-      subtitle: 'Never miss a session with personalized notifications and progress alerts.',
+      subtitle:
+          'Never miss a session with personalized notifications and progress alerts.',
       preview: _PreviewType.notifications,
     ),
   ];
 
   final List<_ExerciseStep> _steps = [
-    _ExerciseStep('Starting Position', 'Stand straight, feet shoulder-width apart. Keep your back neutral.', 5),
-    _ExerciseStep('Bend Knees', 'Slowly lower your body by bending both knees to 90°. Hold for 2 seconds.', 8),
-    _ExerciseStep('Extend Leg', 'Straighten your right leg fully. Feel the quad engage. Hold 3 seconds.', 6),
-    _ExerciseStep('Return', 'Slowly return to starting position. Breathe out as you come up.', 5),
+    _ExerciseStep(
+      'Starting Position',
+      'Stand straight, feet shoulder-width apart. Keep your back neutral.',
+      5,
+    ),
+    _ExerciseStep(
+      'Bend Knees',
+      'Slowly lower your body by bending both knees to 90°. Hold for 2 seconds.',
+      8,
+    ),
+    _ExerciseStep(
+      'Extend Leg',
+      'Straighten your right leg fully. Feel the quad engage. Hold 3 seconds.',
+      6,
+    ),
+    _ExerciseStep(
+      'Return',
+      'Slowly return to starting position. Breathe out as you come up.',
+      5,
+    ),
   ];
 
   @override
   void initState() {
     super.initState();
-    _headerCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
-    _contentCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 800));
-    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000))
-      ..repeat(reverse: true);
+    _headerCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
+    _contentCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+    _pulseCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat(reverse: true);
 
     _headerFade = CurvedAnimation(parent: _headerCtrl, curve: Curves.easeOut);
-    _headerSlide = Tween<Offset>(begin: const Offset(0, -0.2), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _headerCtrl, curve: Curves.easeOutCubic));
+    _headerSlide = Tween<Offset>(
+      begin: const Offset(0, -0.2),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _headerCtrl, curve: Curves.easeOutCubic));
     _contentFade = CurvedAnimation(parent: _contentCtrl, curve: Curves.easeOut);
-    _contentSlide = Tween<Offset>(begin: const Offset(0, 0.15), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _contentCtrl, curve: Curves.easeOutCubic));
-    _pulse = Tween<double>(begin: 1.0, end: 1.08)
-        .animate(CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+    _contentSlide =
+        Tween<Offset>(begin: const Offset(0, 0.15), end: Offset.zero).animate(
+          CurvedAnimation(parent: _contentCtrl, curve: Curves.easeOutCubic),
+        );
+    _pulse = Tween<double>(
+      begin: 1.0,
+      end: 1.08,
+    ).animate(CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
 
     _headerCtrl.forward();
-    Future.delayed(const Duration(milliseconds: 200), () => _contentCtrl.forward());
+    Future.delayed(
+      const Duration(milliseconds: 200),
+      () => _contentCtrl.forward(),
+    );
   }
 
   @override
@@ -102,7 +139,10 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
     if (_activeStep < _steps.length - 1) {
       setState(() => _activeStep++);
     } else {
-      setState(() { _activeStep = 0; _isPlaying = false; });
+      setState(() {
+        _activeStep = 0;
+        _isPlaying = false;
+      });
     }
   }
 
@@ -114,7 +154,10 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
         children: [
           SlideTransition(
             position: _headerSlide,
-            child: FadeTransition(opacity: _headerFade, child: _buildHeader(context)),
+            child: FadeTransition(
+              opacity: _headerFade,
+              child: _buildHeader(context),
+            ),
           ),
           Expanded(
             child: SlideTransition(
@@ -169,7 +212,11 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
                     color: Colors.white.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 18),
+                  child: const Icon(
+                    Icons.arrow_back_ios_new_rounded,
+                    color: Colors.white,
+                    size: 18,
+                  ),
                 ),
               ),
               const SizedBox(width: 14),
@@ -179,33 +226,56 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
                   children: [
                     const Text(
                       'App Demo',
-                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
                     ),
                     Text(
                       'Explore what Rehab+ can do',
-                      style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: 0.75)),
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.white.withValues(alpha: 0.75),
+                      ),
                     ),
                   ],
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.18),
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.25),
+                  ),
                 ),
                 child: Row(
                   children: [
                     ScaleTransition(
                       scale: _pulse,
                       child: Container(
-                        width: 7, height: 7,
-                        decoration: const BoxDecoration(color: Color(0xFF4CAF50), shape: BoxShape.circle),
+                        width: 7,
+                        height: 7,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF4CAF50),
+                          shape: BoxShape.circle,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 6),
-                    const Text('Live', style: TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.w600)),
+                    const Text(
+                      'Live',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -223,9 +293,20 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
       children: [
         Row(
           children: [
-            const PhosphorIcon(PhosphorIconsRegular.sparkle, size: 18, color: primaryTeal),
+            const PhosphorIcon(
+              PhosphorIconsRegular.sparkle,
+              size: 18,
+              color: primaryTeal,
+            ),
             const SizedBox(width: 8),
-            const Text('Key Features', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
+            const Text(
+              'Key Features',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 14),
@@ -241,17 +322,20 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
         const SizedBox(height: 12),
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
-          children: List.generate(_features.length, (i) => AnimatedContainer(
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOutCubic,
-            margin: const EdgeInsets.symmetric(horizontal: 4),
-            width: _currentPage == i ? 20 : 7,
-            height: 7,
-            decoration: BoxDecoration(
-              color: _currentPage == i ? primaryTeal : Colors.grey.shade300,
-              borderRadius: BorderRadius.circular(4),
+          children: List.generate(
+            _features.length,
+            (i) => AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              width: _currentPage == i ? 20 : 7,
+              height: 7,
+              decoration: BoxDecoration(
+                color: _currentPage == i ? primaryTeal : Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(4),
+              ),
             ),
-          )),
+          ),
         ),
       ],
     );
@@ -264,9 +348,20 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
       children: [
         Row(
           children: [
-            const PhosphorIcon(PhosphorIconsRegular.videoCamera, size: 18, color: primaryTeal),
+            const PhosphorIcon(
+              PhosphorIconsRegular.videoCamera,
+              size: 18,
+              color: primaryTeal,
+            ),
             const SizedBox(width: 8),
-            const Text('Exercise Videos', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
+            const Text(
+              'Exercise Videos',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 14),
@@ -298,7 +393,11 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
         color: Colors.white,
         borderRadius: BorderRadius.circular(22),
         boxShadow: [
-          BoxShadow(color: primaryTeal.withValues(alpha: 0.08), blurRadius: 20, offset: const Offset(0, 6)),
+          BoxShadow(
+            color: primaryTeal.withValues(alpha: 0.08),
+            blurRadius: 20,
+            offset: const Offset(0, 6),
+          ),
         ],
       ),
       child: Column(
@@ -306,18 +405,39 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
         children: [
           Row(
             children: [
-              const PhosphorIcon(PhosphorIconsRegular.barbell, size: 18, color: primaryTeal),
+              const PhosphorIcon(
+                PhosphorIconsRegular.barbell,
+                size: 18,
+                color: primaryTeal,
+              ),
               const SizedBox(width: 8),
               const Expanded(
-                child: Text('Exercise Demo', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87)),
+                child: Text(
+                  'Exercise Demo',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
+                ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: const Color(0xFF4A90D9).withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(10),
                 ),
-                child: const Text('Knee Extension', style: TextStyle(fontSize: 11, color: Color(0xFF4A90D9), fontWeight: FontWeight.w600)),
+                child: const Text(
+                  'Knee Extension',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF4A90D9),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ],
           ),
@@ -325,21 +445,26 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
 
           // Step indicator
           Row(
-            children: List.generate(_steps.length, (i) => Expanded(
-              child: GestureDetector(
-                onTap: () => setState(() => _activeStep = i),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeOutCubic,
-                  margin: const EdgeInsets.symmetric(horizontal: 3),
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: i <= _activeStep ? primaryTeal : Colors.grey.shade200,
-                    borderRadius: BorderRadius.circular(3),
+            children: List.generate(
+              _steps.length,
+              (i) => Expanded(
+                child: GestureDetector(
+                  onTap: () => setState(() => _activeStep = i),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeOutCubic,
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: i <= _activeStep
+                          ? primaryTeal
+                          : Colors.grey.shade200,
+                      borderRadius: BorderRadius.circular(3),
+                    ),
                   ),
                 ),
               ),
-            )),
+            ),
           ),
           const SizedBox(height: 6),
           Text(
@@ -356,7 +481,10 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
             transitionBuilder: (child, anim) => FadeTransition(
               opacity: anim,
               child: SlideTransition(
-                position: Tween<Offset>(begin: const Offset(0.1, 0), end: Offset.zero).animate(anim),
+                position: Tween<Offset>(
+                  begin: const Offset(0.1, 0),
+                  end: Offset.zero,
+                ).animate(anim),
                 child: child,
               ),
             ),
@@ -373,13 +501,19 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
                     width: 52,
                     height: 52,
                     decoration: BoxDecoration(
-                      gradient: const LinearGradient(colors: [primaryTeal, darkTeal]),
+                      gradient: const LinearGradient(
+                        colors: [primaryTeal, darkTeal],
+                      ),
                       borderRadius: BorderRadius.circular(14),
                     ),
                     child: Center(
                       child: Text(
                         '${_activeStep + 1}',
-                        style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white),
+                        style: const TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                   ),
@@ -388,15 +522,40 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(step.title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.black87)),
+                        Text(
+                          step.title,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                        ),
                         const SizedBox(height: 4),
-                        Text(step.description, style: const TextStyle(fontSize: 12, color: Colors.black54, height: 1.4)),
+                        Text(
+                          step.description,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.black54,
+                            height: 1.4,
+                          ),
+                        ),
                         const SizedBox(height: 8),
                         Row(
                           children: [
-                            const PhosphorIcon(PhosphorIconsRegular.timer, size: 13, color: primaryTeal),
+                            const PhosphorIcon(
+                              PhosphorIconsRegular.timer,
+                              size: 13,
+                              color: primaryTeal,
+                            ),
                             const SizedBox(width: 4),
-                            Text('${step.seconds}s hold', style: const TextStyle(fontSize: 11, color: primaryTeal, fontWeight: FontWeight.w600)),
+                            Text(
+                              '${step.seconds}s hold',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: primaryTeal,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                           ],
                         ),
                       ],
@@ -412,13 +571,17 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _activeStep > 0 ? () => setState(() => _activeStep--) : null,
+                  onPressed: _activeStep > 0
+                      ? () => setState(() => _activeStep--)
+                      : null,
                   icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 14),
                   label: const Text('Prev'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: primaryTeal,
                     side: const BorderSide(color: primaryTeal),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                 ),
@@ -428,13 +591,22 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
                 flex: 2,
                 child: ElevatedButton.icon(
                   onPressed: _nextStep,
-                  icon: Icon(_activeStep < _steps.length - 1 ? Icons.arrow_forward_ios_rounded : Icons.refresh_rounded, size: 14),
-                  label: Text(_activeStep < _steps.length - 1 ? 'Next Step' : 'Restart'),
+                  icon: Icon(
+                    _activeStep < _steps.length - 1
+                        ? Icons.arrow_forward_ios_rounded
+                        : Icons.refresh_rounded,
+                    size: 14,
+                  ),
+                  label: Text(
+                    _activeStep < _steps.length - 1 ? 'Next Step' : 'Restart',
+                  ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: primaryTeal,
                     foregroundColor: Colors.white,
                     elevation: 0,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                 ),
@@ -458,7 +630,11 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
         ),
         borderRadius: BorderRadius.circular(22),
         boxShadow: [
-          BoxShadow(color: primaryTeal.withValues(alpha: 0.3), blurRadius: 20, offset: const Offset(0, 8)),
+          BoxShadow(
+            color: primaryTeal.withValues(alpha: 0.3),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
         ],
       ),
       child: Column(
@@ -466,13 +642,30 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
         children: [
           const Row(
             children: [
-              PhosphorIcon(PhosphorIconsRegular.chartBar, size: 18, color: Colors.white),
+              PhosphorIcon(
+                PhosphorIconsRegular.chartBar,
+                size: 18,
+                color: Colors.white,
+              ),
               SizedBox(width: 8),
-              Text('Sample Progress', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text(
+                'Sample Progress',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 6),
-          Text('This is how your recovery data will look', style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.7))),
+          Text(
+            'This is how your recovery data will look',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.white.withValues(alpha: 0.7),
+            ),
+          ),
           const SizedBox(height: 20),
           Row(
             children: [
@@ -500,7 +693,13 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
           ),
           const SizedBox(height: 8),
           Center(
-            child: Text('Weekly Activity', style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.6))),
+            child: Text(
+              'Weekly Activity',
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.white.withValues(alpha: 0.6),
+              ),
+            ),
           ),
         ],
       ),
@@ -520,8 +719,21 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
           children: [
             PhosphorIcon(icon, size: 18, color: Colors.white),
             const SizedBox(height: 6),
-            Text(value, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white)),
-            Text(label, style: TextStyle(fontSize: 10, color: Colors.white.withValues(alpha: 0.7))),
+            Text(
+              value,
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 10,
+                color: Colors.white.withValues(alpha: 0.7),
+              ),
+            ),
           ],
         ),
       ),
@@ -540,7 +752,13 @@ class _DemoScreenState extends State<DemoScreen> with TickerProviderStateMixin {
           ),
         ),
         const SizedBox(height: 6),
-        Text(day, style: TextStyle(fontSize: 10, color: Colors.white.withValues(alpha: 0.7))),
+        Text(
+          day,
+          style: TextStyle(
+            fontSize: 10,
+            color: Colors.white.withValues(alpha: 0.7),
+          ),
+        ),
       ],
     );
   }
@@ -560,7 +778,11 @@ class _FeatureCard extends StatelessWidget {
         color: Colors.white,
         borderRadius: BorderRadius.circular(22),
         boxShadow: [
-          BoxShadow(color: feature.color.withValues(alpha: 0.12), blurRadius: 16, offset: const Offset(0, 6)),
+          BoxShadow(
+            color: feature.color.withValues(alpha: 0.12),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
         ],
       ),
       child: Column(
@@ -575,9 +797,23 @@ class _FeatureCard extends StatelessWidget {
             child: PhosphorIcon(feature.icon, size: 28, color: feature.color),
           ),
           const SizedBox(height: 16),
-          Text(feature.title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
+          Text(
+            feature.title,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.black87,
+            ),
+          ),
           const SizedBox(height: 8),
-          Text(feature.subtitle, style: const TextStyle(fontSize: 13, color: Colors.black54, height: 1.5)),
+          Text(
+            feature.subtitle,
+            style: const TextStyle(
+              fontSize: 13,
+              color: Colors.black54,
+              height: 1.5,
+            ),
+          ),
         ],
       ),
     );
@@ -592,7 +828,13 @@ class _DemoFeature {
   final Color color;
   final String title, subtitle;
   final _PreviewType preview;
-  const _DemoFeature({required this.icon, required this.color, required this.title, required this.subtitle, required this.preview});
+  const _DemoFeature({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.subtitle,
+    required this.preview,
+  });
 }
 
 class _ExerciseStep {
@@ -625,10 +867,10 @@ class _VideoCardState extends State<_VideoCard> {
   bool _expanded = false;
 
   Color get _levelColor => switch (widget.level) {
-        'Beginner' => const Color(0xFF4CAF50),
-        'Intermediate' => const Color(0xFFFF9800),
-        _ => const Color(0xFFE53935),
-      };
+    'Beginner' => const Color(0xFF4CAF50),
+    'Intermediate' => const Color(0xFFFF9800),
+    _ => const Color(0xFFE53935),
+  };
 
   Future<void> _initVideo() async {
     if (_loaded) return;
@@ -663,7 +905,13 @@ class _VideoCardState extends State<_VideoCard> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: [BoxShadow(color: widget.color.withValues(alpha: 0.1), blurRadius: 14, offset: const Offset(0, 5))],
+        boxShadow: [
+          BoxShadow(
+            color: widget.color.withValues(alpha: 0.1),
+            blurRadius: 14,
+            offset: const Offset(0, 5),
+          ),
+        ],
       ),
       child: Column(
         children: [
@@ -678,7 +926,10 @@ class _VideoCardState extends State<_VideoCard> {
                 _vpCtrl?.dispose();
                 _chewieCtrl = null;
                 _vpCtrl = null;
-                setState(() { _expanded = false; _loaded = false; });
+                setState(() {
+                  _expanded = false;
+                  _loaded = false;
+                });
               }
             },
             child: AnimatedContainer(
@@ -686,29 +937,43 @@ class _VideoCardState extends State<_VideoCard> {
               curve: Curves.easeOutCubic,
               height: _expanded ? 200 : 72,
               decoration: BoxDecoration(
-                color: _expanded ? Colors.black : widget.color.withValues(alpha: 0.08),
+                color: _expanded
+                    ? Colors.black
+                    : widget.color.withValues(alpha: 0.08),
                 borderRadius: _expanded
                     ? const BorderRadius.vertical(top: Radius.circular(20))
                     : BorderRadius.circular(20),
               ),
               child: _expanded
                   ? (_loaded && _chewieCtrl != null
-                      ? ClipRRect(
-                          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-                          child: Chewie(controller: _chewieCtrl!),
-                        )
-                      : const Center(child: CircularProgressIndicator(color: primaryTeal, strokeWidth: 2)))
+                        ? ClipRRect(
+                            borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(20),
+                            ),
+                            child: Chewie(controller: _chewieCtrl!),
+                          )
+                        : const Center(
+                            child: CircularProgressIndicator(
+                              color: primaryTeal,
+                              strokeWidth: 2,
+                            ),
+                          ))
                   : Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       child: Row(
                         children: [
                           Container(
-                            width: 44, height: 44,
+                            width: 44,
+                            height: 44,
                             decoration: BoxDecoration(
                               color: widget.color,
                               borderRadius: BorderRadius.circular(12),
                             ),
-                            child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 26),
+                            child: const Icon(
+                              Icons.play_arrow_rounded,
+                              color: Colors.white,
+                              size: 26,
+                            ),
                           ),
                           const SizedBox(width: 14),
                           Expanded(
@@ -716,21 +981,50 @@ class _VideoCardState extends State<_VideoCard> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Text(widget.title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.black87)),
+                                Text(
+                                  widget.title,
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.black87,
+                                  ),
+                                ),
                                 const SizedBox(height: 3),
                                 Row(
                                   children: [
-                                    Icon(Icons.access_time_rounded, size: 12, color: Colors.grey.shade400),
+                                    Icon(
+                                      Icons.access_time_rounded,
+                                      size: 12,
+                                      color: Colors.grey.shade400,
+                                    ),
                                     const SizedBox(width: 4),
-                                    Text(widget.duration, style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+                                    Text(
+                                      widget.duration,
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: Colors.grey.shade500,
+                                      ),
+                                    ),
                                     const SizedBox(width: 10),
                                     Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 7,
+                                        vertical: 2,
+                                      ),
                                       decoration: BoxDecoration(
-                                        color: _levelColor.withValues(alpha: 0.1),
+                                        color: _levelColor.withValues(
+                                          alpha: 0.1,
+                                        ),
                                         borderRadius: BorderRadius.circular(6),
                                       ),
-                                      child: Text(widget.level, style: TextStyle(fontSize: 10, color: _levelColor, fontWeight: FontWeight.w700)),
+                                      child: Text(
+                                        widget.level,
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          color: _levelColor,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
                                     ),
                                   ],
                                 ),
@@ -738,8 +1032,11 @@ class _VideoCardState extends State<_VideoCard> {
                             ),
                           ),
                           Icon(
-                            _expanded ? Icons.keyboard_arrow_up_rounded : Icons.play_circle_outline_rounded,
-                            color: widget.color, size: 28,
+                            _expanded
+                                ? Icons.keyboard_arrow_up_rounded
+                                : Icons.play_circle_outline_rounded,
+                            color: widget.color,
+                            size: 28,
                           ),
                         ],
                       ),

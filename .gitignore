@@ -18,32 +18,22 @@ migrate_working_dir/
 *.iws
 .idea/
 
-<<<<<<< HEAD
 # VS Code
 .vscode/
-=======
 # The .vscode folder contains launch configuration and tasks you configure in
 # VS Code which you may wish to be included in version control, so this line
 # is commented out by default.
 #.vscode/
->>>>>>> 34681c47cca11c70e87c1532105e8a0e0af572d4
 
 # Flutter/Dart/Pub related
 **/doc/api/
 **/ios/Flutter/.last_build_id
 .dart_tool/
-<<<<<<< HEAD
 .flutter-plugins
-=======
->>>>>>> 34681c47cca11c70e87c1532105e8a0e0af572d4
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
 /build/
-<<<<<<< HEAD
-=======
-/coverage/
->>>>>>> 34681c47cca11c70e87c1532105e8a0e0af572d4
 
 # Symbolication related
 app.*.symbols
@@ -51,7 +41,6 @@ app.*.symbols
 # Obfuscation related
 app.*.map.json
 
-<<<<<<< HEAD
 # Android Studio build artifacts
 /android/app/debug
 /android/app/profile
@@ -73,9 +62,134 @@ app.*.map.json
 
 # Firebase config (contains API keys - keep out of git)
 firebase_options.dart
-=======
 # Android Studio will place build artifacts here
 /android/app/debug
 /android/app/profile
 /android/app/release
->>>>>>> 34681c47cca11c70e87c1532105e8a0e0af572d4
+
+#-------------------------
+# Operating Specific Junk Files
+#-------------------------
+
+# OS X
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# OS X Thumbnails
+._*
+
+# Windows image file caches
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows Installer files
+*.cab
+*.msi
+*.msm
+*.msp
+
+# Windows shortcuts
+*.lnk
+
+# Linux
+*~
+
+# KDE directory preferences
+.directory
+
+# Linux trash folder which might appear on any partition or disk
+.Trash-*
+
+#-------------------------
+# Environment Files
+#-------------------------
+# These should never be under version control,
+# as it poses a security risk.
+.env
+.vagrant
+Vagrantfile
+
+#-------------------------
+# Temporary Files
+#-------------------------
+writable/cache/*
+!writable/cache/index.html
+
+writable/logs/*
+!writable/logs/index.html
+
+writable/session/*
+!writable/session/index.html
+
+writable/uploads/*
+!writable/uploads/index.html
+
+writable/debugbar/*
+!writable/debugbar/index.html
+
+php_errors.log
+
+#-------------------------
+# User Guide Temp Files
+#-------------------------
+user_guide_src/build/*
+user_guide_src/cilexer/build/*
+user_guide_src/cilexer/dist/*
+user_guide_src/cilexer/pycilexer.egg-info/*
+
+#-------------------------
+# Test Files
+#-------------------------
+tests/coverage*
+
+# Don't save phpunit under version control.
+phpunit
+
+#-------------------------
+# Composer
+#-------------------------
+vendor/
+
+#-------------------------
+# IDE / Development Files
+#-------------------------
+
+# Modules Testing
+_modules/*
+
+# phpenv local config
+.php-version
+
+# Jetbrains editors (PHPStorm, etc)
+.idea/
+*.iml
+
+# NetBeans
+/nbproject/
+/build/
+/nbbuild/
+/dist/
+/nbdist/
+/nbactions.xml
+/nb-configuration.xml
+/.nb-gradle/
+
+# Sublime Text
+*.tmlanguage.cache
+*.tmPreferences.cache
+*.stTheme.cache
+*.sublime-workspace
+*.sublime-project
+.phpintel
+/api/
+
+# Visual Studio Code
+.vscode/
+
+/results/
+/phpunit*.xml

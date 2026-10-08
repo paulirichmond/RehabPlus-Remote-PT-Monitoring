@@ -470,8 +470,9 @@ class FormChecker {
       maxY = maxY == null ? p.dy : max(maxY, p.dy);
       n++;
     }
-    if (n < 3)
+    if (n < 3) {
       return null; // not enough evidence yet (3 keeps it working at low fps)
+    }
     return Offset(maxX! - minX!, maxY! - minY!).distance / torso;
   }
 

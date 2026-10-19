@@ -148,7 +148,7 @@
                             </label>
                         </div>
 
-                        <a href="#">
+                        <a href="{{ route('password.request') }}">
                             Forgot password?
                         </a>
                     </div>

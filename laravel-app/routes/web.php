@@ -7,6 +7,7 @@ use App\Http\Controllers\CspReportController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\MessageController;
+use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\PatientController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\PrescriptionController;
@@ -30,6 +31,16 @@ Route::get('/', function () {
 Route::get('/login', [AuthController::class, 'login'])->name('login.page');
 Route::post('/login', [AuthController::class, 'attempt'])->middleware('throttle:10,1')->name('login.submit');
 Route::post('/logout', [AuthController::class, 'doLogout'])->name('logout');
+
+// Forgot password: emailed 6-digit code, then a new password (see PasswordResetService).
+// Each throttle has its own prefix so it doesn't share a counter with the login one.
+Route::get('/forgot-password', [PasswordResetController::class, 'request'])->name('password.request');
+Route::post('/forgot-password', [PasswordResetController::class, 'send'])->middleware('throttle:5,1,pwreset-send')->name('password.email');
+Route::get('/forgot-password/verify', [PasswordResetController::class, 'verifyForm'])->name('password.verify');
+Route::post('/forgot-password/verify', [PasswordResetController::class, 'verify'])->middleware('throttle:10,1,pwreset-verify')->name('password.verify.submit');
+Route::post('/forgot-password/resend', [PasswordResetController::class, 'resend'])->middleware('throttle:5,1,pwreset-send')->name('password.resend');
+Route::get('/reset-password', [PasswordResetController::class, 'resetForm'])->name('password.reset');
+Route::post('/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:5,1,pwreset-reset')->name('password.update');
 
 // Content-Security-Policy violation reports from browsers (logged, see ContentSecurityPolicy).
 Route::post('/csp-report', CspReportController::class)->middleware('throttle:60,1')->name('csp.report');

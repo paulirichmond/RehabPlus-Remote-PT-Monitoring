@@ -1,3 +1,7 @@
+<<<<<<< HEAD
+# RehabPlus
+Admin Website
+=======
 # Mobile-Based Camera-Assisted Remote Physical Therapy Monitoring System
 
 ## Project Description
@@ -43,3 +47,4 @@ This repository is used to organize the team's Capstone project documentation, s
 **Current Phase:** Capstone 1 – Planning and Documentation
 
 **Development Status:** Not yet started
+>>>>>>> 04e24bb581e970353dae6955905475ca81aad9e0
